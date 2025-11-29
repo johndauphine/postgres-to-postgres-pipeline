@@ -1,0 +1,10 @@
+# Astro Runtime includes the following pre-installed providers packages: https://www.astronomer.io/docs/astro/runtime-image-architecture#provider-packages
+
+# Database Providers (versions compatible with Astro Runtime 3.1)
+apache-airflow-providers-postgres>=5.12.0
+
+# Database Connectivity
+pg8000>=1.30.0
+psycopg2-binary>=2.9.0
+
+
