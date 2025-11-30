@@ -1,0 +1,21 @@
+airflow:
+  connections:
+    - conn_id: postgres_source
+      conn_type: postgres
+      conn_host: postgres-source
+      conn_schema: source_db
+      conn_login: postgres
+      conn_password: PostgresPassword123
+      conn_port: 5432
+
+    - conn_id: postgres_target
+      conn_type: postgres
+      conn_host: postgres-target
+      conn_schema: target_db
+      conn_login: postgres
+      conn_password: PostgresPassword123
+      conn_port: 5432
+
+  variables:
+    - variable_name: target_schema
+      variable_value: public

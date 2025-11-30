@@ -16,8 +16,8 @@ docker-compose up -d
 ```
 
 This starts two PostgreSQL containers:
-- **pg-source**: Source database on port 5434
-- **pg-target**: Target database on port 5435
+- **postgres-source**: Source database on port 5434 (database: `source_db`)
+- **postgres-target**: Target database on port 5435 (database: `target_db`)
 
 Both use credentials: `postgres` / `PostgresPassword123`
 
@@ -34,51 +34,20 @@ This starts 5 Airflow containers:
 - Triggerer
 - PostgreSQL (Airflow metadata)
 
-**Note:** On first start, you may see connection errors. This is expected - we'll add the connections next.
+Connections are auto-configured via `airflow_settings.yaml`.
 
 ### 3. Connect PostgreSQL Databases to Airflow Network
 
-The source and target databases need to be on the same Docker network as Airflow:
-
 ```bash
-docker network connect postgres-to-postgres-pipeline_886850_airflow pg-source
-docker network connect postgres-to-postgres-pipeline_886850_airflow pg-target
+./scripts/connect-databases.sh
 ```
 
-**Note:** The network name includes a unique ID. Find yours with:
-```bash
-docker network ls | grep airflow
-```
+This script automatically finds the Airflow network and connects both database containers.
 
-### 4. Add Airflow Connections
+### 4. Create Test Data in Source Database
 
 ```bash
-# Get the scheduler container name
-SCHEDULER=$(docker ps --format '{{.Names}}' | grep scheduler)
-
-# Add source connection
-docker exec $SCHEDULER airflow connections add postgres_source \
-  --conn-type postgres \
-  --conn-host pg-source \
-  --conn-schema source_db \
-  --conn-login postgres \
-  --conn-password PostgresPassword123 \
-  --conn-port 5432
-
-# Add target connection
-docker exec $SCHEDULER airflow connections add postgres_target \
-  --conn-type postgres \
-  --conn-host pg-target \
-  --conn-schema target_db \
-  --conn-login postgres \
-  --conn-password PostgresPassword123 \
-  --conn-port 5432
-```
-
-### 5. Create Test Data in Source Database
-
-```bash
-docker exec pg-source psql -U postgres -d source_db -c "
+docker exec postgres-source psql -U postgres -d source_db -c "
 -- Create sample tables
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
@@ -156,13 +125,13 @@ ON CONFLICT DO NOTHING;
 "
 ```
 
-### 6. Run the Migration
+### 5. Run the Migration
 
 **Option A: Using pg_dump (Recommended for quick setup)**
 
 ```bash
-docker exec pg-source pg_dump -U postgres -d source_db --schema=public --no-owner --no-acl | \
-  docker exec -i pg-target psql -U postgres -d target_db
+docker exec postgres-source pg_dump -U postgres -d source_db --schema=public --no-owner --no-acl | \
+  docker exec -i postgres-target psql -U postgres -d target_db
 ```
 
 **Option B: Using Airflow DAG**
@@ -172,10 +141,10 @@ SCHEDULER=$(docker ps --format '{{.Names}}' | grep scheduler)
 docker exec $SCHEDULER airflow dags trigger postgres_to_postgres_migration
 ```
 
-### 7. Verify Migration
+### 6. Verify Migration
 
 ```bash
-docker exec pg-target psql -U postgres -d target_db -c "
+docker exec postgres-target psql -U postgres -d target_db -c "
 SELECT 'users' as table_name, COUNT(*) as rows FROM users
 UNION ALL SELECT 'products', COUNT(*) FROM products
 UNION ALL SELECT 'orders', COUNT(*) FROM orders
@@ -221,10 +190,10 @@ astro dev parse
 astro dev pytest tests/
 
 # Connect to source database
-docker exec -it pg-source psql -U postgres -d source_db
+docker exec -it postgres-source psql -U postgres -d source_db
 
 # Connect to target database
-docker exec -it pg-target psql -U postgres -d target_db
+docker exec -it postgres-target psql -U postgres -d target_db
 ```
 
 ## Troubleshooting
@@ -234,19 +203,15 @@ docker exec -it pg-target psql -U postgres -d target_db
 If Airflow tasks fail with connection errors, ensure the PostgreSQL containers are connected to the Airflow network:
 
 ```bash
-docker network connect postgres-to-postgres-pipeline_886850_airflow pg-source
-docker network connect postgres-to-postgres-pipeline_886850_airflow pg-target
+./scripts/connect-databases.sh
 ```
 
 ### Connections Not Found
 
-If DAGs fail with "connection not defined" errors, re-add the connections:
+Connections are auto-configured via `airflow_settings.yaml`. If they're missing, restart Airflow:
 
 ```bash
-SCHEDULER=$(docker ps --format '{{.Names}}' | grep scheduler)
-docker exec $SCHEDULER airflow connections delete postgres_source 2>/dev/null
-docker exec $SCHEDULER airflow connections delete postgres_target 2>/dev/null
-# Then re-add as shown in step 4
+astro dev restart
 ```
 
 ### Container Name Mismatch
