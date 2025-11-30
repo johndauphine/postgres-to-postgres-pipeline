@@ -59,4 +59,5 @@ volumes:
 
 networks:
   migration_network:
-    driver: bridge
+    name: mssql-to-postgres-pipeline_886850_airflow
+    external: true
