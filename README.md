@@ -159,8 +159,25 @@ postgres-to-postgres-pipeline/
 | `target_conn_id` | `postgres_target` | Airflow connection ID for target PostgreSQL |
 | `source_schema` | `public` | Schema to migrate from source |
 | `target_schema` | `public` | Target schema in destination |
-| `chunk_size` | `10000` | Rows per batch during transfer |
+| `chunk_size` | `100000` | Rows per batch during transfer |
 | `exclude_tables` | `[]` | Table patterns to skip |
+| `use_unlogged_tables` | `true` | Create tables as UNLOGGED for faster bulk inserts |
+| `drop_existing_tables` | `false` | Drop and recreate existing tables instead of truncating |
+
+### When to Use `drop_existing_tables`
+
+By default, the DAG truncates existing tables before loading data. This is faster but assumes the target table schema matches the source.
+
+Set `drop_existing_tables: true` when:
+- The source schema has changed (new/removed/modified columns)
+- Switching to a different source database with different table structures
+- You encounter errors like `column "X" of relation "Y" does not exist`
+
+**Example: Trigger with clean target**
+```bash
+astro dev run dags trigger postgres_to_postgres_migration \
+  --conf '{"drop_existing_tables": true}'
+```
 
 ## Development
 

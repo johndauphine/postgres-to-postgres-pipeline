@@ -101,6 +101,11 @@ def validate_sql_identifier(identifier: str, identifier_type: str = "identifier"
             type="boolean",
             description="Create tables as UNLOGGED during load for faster bulk inserts (converts to LOGGED after)"
         ),
+        "drop_existing_tables": Param(
+            default=False,
+            type="boolean",
+            description="Drop and recreate existing tables instead of truncating. Use when source schema has changed."
+        ),
     },
     tags=["migration", "postgres", "etl", "full-refresh"],
 )
@@ -149,12 +154,15 @@ def postgres_to_postgres_migration():
         """
         Create or truncate tables in PostgreSQL target.
 
-        For existing tables: truncate data (preserve structure)
+        For existing tables:
+          - If drop_existing_tables=True: drop and recreate (use when schema changed)
+          - If drop_existing_tables=False: truncate data (preserve structure)
         For new tables: create with proper data types
         """
         params = context["params"]
         target_schema = params["target_schema"]
         use_unlogged = params.get("use_unlogged_tables", True)
+        drop_existing = params.get("drop_existing_tables", False)
 
         generator = ddl_generator.DDLGenerator(params["target_conn_id"])
         prepared_tables = []
@@ -163,12 +171,24 @@ def postgres_to_postgres_migration():
             table_name = table_schema["table_name"]
 
             try:
-                if generator.table_exists(table_name, target_schema):
+                table_exists = generator.table_exists(table_name, target_schema)
+
+                if table_exists and drop_existing:
+                    # Drop and recreate when schema may have changed
+                    logger.info(f"Dropping existing table {target_schema}.{table_name}")
+                    drop_stmt = f'DROP TABLE IF EXISTS {target_schema}."{table_name}" CASCADE'
+                    generator.execute_ddl([drop_stmt], transaction=False)
+                    logger.info(f"✓ Dropped table {table_name}")
+                    table_exists = False  # Will be recreated below
+
+                if table_exists:
+                    # Truncate existing table (schema unchanged)
                     logger.info(f"Truncating existing table {target_schema}.{table_name}")
                     truncate_stmt = generator.generate_truncate_table(table_name, target_schema, cascade=False)
                     generator.execute_ddl([truncate_stmt], transaction=False)
                     logger.info(f"✓ Truncated table {table_name}")
                 else:
+                    # Create new table
                     unlogged_msg = " (UNLOGGED)" if use_unlogged else ""
                     logger.info(f"Creating new table {target_schema}.{table_name}{unlogged_msg}")
 
