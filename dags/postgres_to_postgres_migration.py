@@ -119,9 +119,9 @@ def validate_sql_identifier(identifier: str, identifier_type: str = "identifier"
             description="Whether to validate sample data (slower)"
         ),
         "create_foreign_keys": Param(
-            default=True,
+            default=False,
             type="boolean",
-            description="Whether to create foreign key constraints"
+            description="Whether to create foreign key constraints (disabled by default - FKs should exist in target)"
         ),
         "use_unlogged_tables": Param(
             default=True,
@@ -199,39 +199,59 @@ def postgres_to_postgres_migration():
         **context
     ) -> List[Dict[str, Any]]:
         """
-        Create all tables in PostgreSQL target with proper data types.
+        Create or truncate tables in PostgreSQL target.
+
+        For existing tables: truncate data (preserve structure)
+        For new tables: create with proper data types
 
         Args:
             tables_schema: List of table schemas from PostgreSQL source
             schema_status: Status from schema creation task
 
         Returns:
-            List of created tables with mapping information
+            List of tables ready for data transfer
         """
         params = context["params"]
         target_schema = params["target_schema"]
         use_unlogged = params.get("use_unlogged_tables", True)
 
         generator = ddl_generator.DDLGenerator(params["target_conn_id"])
-        created_tables = []
+        prepared_tables = []
+
+        # Disable FK triggers on all existing tables to allow parallel loading
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        postgres_hook = PostgresHook(postgres_conn_id=params["target_conn_id"])
 
         for table_schema in tables_schema:
             table_name = table_schema["table_name"]
-            unlogged_msg = " (UNLOGGED)" if use_unlogged else ""
-            logger.info(f"Creating table {target_schema}.{table_name}{unlogged_msg}")
+            if generator.table_exists(table_name, target_schema):
+                postgres_hook.run(f"ALTER TABLE {target_schema}.{table_name} DISABLE TRIGGER ALL", autocommit=True)
+                logger.info(f"Disabled triggers on {target_schema}.{table_name}")
+
+        for table_schema in tables_schema:
+            table_name = table_schema["table_name"]
 
             try:
-                # Remove PK constraint from CREATE TABLE - will be added after data load
-                ddl_statements = [generator.generate_drop_table(table_name, target_schema, cascade=True)]
-                ddl_statements.append(generator.generate_create_table(
-                    table_schema,
-                    target_schema,
-                    include_constraints=False,  # Skip PK - added after data load
-                    unlogged=use_unlogged
-                ))
+                if generator.table_exists(table_name, target_schema):
+                    # Table exists - truncate it (CASCADE needed for FK references)
+                    logger.info(f"Truncating existing table {target_schema}.{table_name}")
+                    truncate_stmt = generator.generate_truncate_table(table_name, target_schema, cascade=True)
+                    generator.execute_ddl([truncate_stmt], transaction=False)
+                    logger.info(f"✓ Truncated table {table_name}")
+                else:
+                    # Table doesn't exist - create it
+                    unlogged_msg = " (UNLOGGED)" if use_unlogged else ""
+                    logger.info(f"Creating new table {target_schema}.{table_name}{unlogged_msg}")
 
-                # Execute DDL
-                generator.execute_ddl(ddl_statements, transaction=False)
+                    ddl_statements = [generator.generate_create_table(
+                        table_schema,
+                        target_schema,
+                        include_constraints=False,  # Skip PK - added after data load
+                        unlogged=use_unlogged
+                    )]
+
+                    generator.execute_ddl(ddl_statements, transaction=False)
+                    logger.info(f"✓ Created table {table_name}")
 
                 # Prepare table info for data transfer
                 table_info = {
@@ -242,16 +262,14 @@ def postgres_to_postgres_migration():
                     "row_count": table_schema.get("row_count", 0),
                     "columns": [col["column_name"] for col in table_schema["columns"]],
                 }
-                created_tables.append(table_info)
-
-                logger.info(f"✓ Created table {table_name}")
+                prepared_tables.append(table_info)
 
             except Exception as e:
-                logger.error(f"✗ Failed to create table {table_name}: {str(e)}")
+                logger.error(f"✗ Failed to prepare table {table_name}: {str(e)}")
                 raise
 
-        logger.info(f"Successfully created {len(created_tables)} tables")
-        return created_tables
+        logger.info(f"Successfully prepared {len(prepared_tables)} tables for data transfer")
+        return prepared_tables
 
     # Threshold for partitioning large tables (rows)
     LARGE_TABLE_THRESHOLD = 5_000_000
@@ -406,7 +424,7 @@ def postgres_to_postgres_migration():
             target_conn_id=params["target_conn_id"],
             table_info=table_info,
             chunk_size=params["chunk_size"],
-            truncate=True  # Ensure tables are truncated before transfer
+            truncate=False  # Tables already truncated in create_target_tables task
         )
 
         # Add table name to result for tracking
@@ -483,7 +501,7 @@ def postgres_to_postgres_migration():
         **context
     ) -> str:
         """
-        Create foreign key constraints after all data is transferred.
+        Re-enable triggers and optionally create foreign key constraints after data transfer.
 
         Args:
             tables_schema: Original table schemas with foreign key definitions
@@ -493,15 +511,26 @@ def postgres_to_postgres_migration():
             Status message
         """
         params = context["params"]
+        target_schema = params["target_schema"]
+
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        postgres_hook = PostgresHook(postgres_conn_id=params["target_conn_id"])
+        generator = ddl_generator.DDLGenerator(params["target_conn_id"])
+
+        # Re-enable triggers on all tables (disabled during truncate for parallel loading)
+        for table_schema in tables_schema:
+            table_name = table_schema["table_name"]
+            if generator.table_exists(table_name, target_schema):
+                postgres_hook.run(f"ALTER TABLE {target_schema}.{table_name} ENABLE TRIGGER ALL", autocommit=True)
+                logger.info(f"Re-enabled triggers on {target_schema}.{table_name}")
 
         if not params["create_foreign_keys"]:
             logger.info("Skipping foreign key creation (disabled by parameter)")
-            return "Foreign keys skipped"
+            return "Foreign keys skipped, triggers re-enabled"
 
         # Only create foreign keys for successfully transferred tables
         successful_tables = {r["table_name"] for r in transfer_results if r.get("success", False)}
 
-        generator = ddl_generator.DDLGenerator(params["target_conn_id"])
         fk_count = 0
 
         for table_schema in tables_schema:

@@ -1,2 +1,2 @@
 project:
-    name: mssql-to-postgres-pipeline
+    name: postgres-to-postgres-pipeline

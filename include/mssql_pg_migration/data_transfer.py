@@ -304,7 +304,7 @@ class DataTransfer:
           AND NOT a.attisdropped
         ORDER BY a.attnum
         """
-        columns = self.source_hook.get_records(query, parameters=[schema_name, table_name])
+        columns = self.source_hook.get_records(query, parameters=(schema_name, table_name))
         return [col[0] for col in columns]
 
     def _get_primary_key_column(
@@ -341,7 +341,7 @@ class DataTransfer:
         ORDER BY array_position(con.conkey, a.attnum)
         """
         try:
-            pk_cols = self.source_hook.get_records(query, parameters=[schema_name, table_name])
+            pk_cols = self.source_hook.get_records(query, parameters=(schema_name, table_name))
             if pk_cols:
                 return pk_cols[0][0]
         except Exception:

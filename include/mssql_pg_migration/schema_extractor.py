@@ -52,7 +52,7 @@ class SchemaExtractor:
         ORDER BY t.table_name
         """
 
-        tables = self.postgres_hook.get_records(query, parameters=[schema_name])
+        tables = self.postgres_hook.get_records(query, parameters=(schema_name,))
 
         result = []
         for table in tables:
@@ -115,7 +115,7 @@ class SchemaExtractor:
             COALESCE(
                 (SELECT TRUE FROM pg_attrdef d
                  WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum
-                 AND pg_get_expr(d.adbin, d.adrelid) LIKE 'nextval%'),
+                 AND pg_get_expr(d.adbin, d.adrelid) LIKE 'nextval%%'),
                 FALSE
             ) AS is_identity,
             COALESCE(a.attgenerated != '', FALSE) AS is_computed,
@@ -133,7 +133,7 @@ class SchemaExtractor:
         ORDER BY a.attnum
         """
 
-        columns = self.postgres_hook.get_records(query, parameters=[table_oid])
+        columns = self.postgres_hook.get_records(query, parameters=(table_oid,))
 
         result = []
         for col in columns:
@@ -178,7 +178,7 @@ class SchemaExtractor:
         GROUP BY con.conname
         """
 
-        result = self.postgres_hook.get_first(query, parameters=[table_oid])
+        result = self.postgres_hook.get_first(query, parameters=(table_oid,))
 
         if result:
             return {
@@ -212,7 +212,7 @@ class SchemaExtractor:
         GROUP BY i.relname, ix.indisunique, am.amname
         """
 
-        indexes = self.postgres_hook.get_records(query, parameters=[table_oid])
+        indexes = self.postgres_hook.get_records(query, parameters=(table_oid,))
 
         result = []
         for idx in indexes:
@@ -271,7 +271,7 @@ class SchemaExtractor:
         GROUP BY con.conname, nf.nspname, cf.relname, con.confdeltype, con.confupdtype
         """
 
-        foreign_keys = self.postgres_hook.get_records(query, parameters=[table_oid])
+        foreign_keys = self.postgres_hook.get_records(query, parameters=(table_oid,))
 
         result = []
         for fk in foreign_keys:
@@ -308,7 +308,7 @@ class SchemaExtractor:
           AND con.contype = 'c'
         """
 
-        constraints = self.postgres_hook.get_records(query, parameters=[table_oid])
+        constraints = self.postgres_hook.get_records(query, parameters=(table_oid,))
 
         result = []
         for con in constraints:
@@ -340,7 +340,7 @@ class SchemaExtractor:
         WHERE n.nspname = %s AND c.relname = %s AND c.relkind = 'r'
         """
 
-        result = self.postgres_hook.get_first(query, parameters=[schema_name, table_name])
+        result = self.postgres_hook.get_first(query, parameters=(schema_name, table_name))
 
         if not result:
             raise ValueError(f"Table {schema_name}.{table_name} not found")

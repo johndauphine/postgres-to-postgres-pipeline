@@ -205,6 +205,26 @@ class DDLGenerator:
 
         return check_statements
 
+    def table_exists(self, table_name: str, schema_name: str = 'public') -> bool:
+        """
+        Check if a table exists in the target database.
+
+        Args:
+            table_name: Table name to check
+            schema_name: Schema name
+
+        Returns:
+            True if table exists, False otherwise
+        """
+        query = """
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = %s AND table_name = %s
+        )
+        """
+        result = self.postgres_hook.get_first(query, parameters=(schema_name, table_name))
+        return result[0] if result else False
+
     def generate_set_logged(self, table_name: str, schema_name: str = 'public') -> str:
         """
         Generate ALTER TABLE SET LOGGED statement.
@@ -354,8 +374,14 @@ class DDLGenerator:
             parts.append('NOT NULL')
 
         # Add default value if present
-        if column.get('default_value'):
-            parts.append(f"DEFAULT {column['default_value']}")
+        # Skip default for SERIAL types (they already have implicit nextval default)
+        data_type_upper = column['data_type'].upper()
+        is_serial = data_type_upper in ('SERIAL', 'SMALLSERIAL', 'BIGSERIAL')
+        if column.get('default_value') and not is_serial:
+            # Also skip nextval defaults since SERIAL handles this
+            default_val = column['default_value']
+            if not default_val.startswith('nextval('):
+                parts.append(f"DEFAULT {default_val}")
 
         return '    ' + ' '.join(parts)
 

@@ -116,7 +116,7 @@ class MigrationValidator:
               AND NOT a.attisdropped
             ORDER BY a.attnum
             """
-            columns = self.source_hook.get_records(columns_query, parameters=[source_schema, source_table])
+            columns = self.source_hook.get_records(columns_query, parameters=(source_schema, source_table))
             key_columns = [col[0] for col in columns[:5]]  # Use first 5 columns for comparison
 
         # Build column lists
