@@ -200,8 +200,10 @@ def postgres_to_postgres_migration():
         return prepared_tables
 
     # Threshold for partitioning large tables (rows)
-    LARGE_TABLE_THRESHOLD = 5_000_000
-    PARTITION_COUNT = 4
+    # Lowered from 5M to 2M to partition more tables for better parallelism
+    LARGE_TABLE_THRESHOLD = 2_000_000
+    # Increased from 4 to 8 for more parallel workers per large table
+    PARTITION_COUNT = 8
 
     @task
     def prepare_regular_tables(created_tables: List[Dict[str, Any]], **context) -> List[Dict[str, Any]]:
@@ -304,7 +306,7 @@ def postgres_to_postgres_migration():
                     'where_clause': where_clause,
                     'pk_column': safe_pk_column,
                     'estimated_rows': row_count // PARTITION_COUNT,
-                    'truncate_first': i == 0
+                    # truncate_first no longer needed - truncate happens in create_target_tables
                 }
                 partitions.append(partition_info)
 
@@ -355,7 +357,7 @@ def postgres_to_postgres_migration():
             target_conn_id=params["target_conn_id"],
             table_info=partition_info,
             chunk_size=params["chunk_size"],
-            truncate=partition_info.get('truncate_first', False),
+            truncate=False,  # truncate already done in create_target_tables
             where_clause=partition_info.get('where_clause')
         )
 
@@ -441,40 +443,12 @@ def postgres_to_postgres_migration():
     regular_tables = prepare_regular_tables(created_tables)
     large_table_partitions = prepare_large_table_partitions(created_tables)
 
-    @task
-    def split_partitions(partitions: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
-        """Split partitions into first (truncate) and remaining (no truncate)."""
-        first_partitions = []
-        remaining_partitions = []
-
-        for partition in partitions:
-            if partition.get('truncate_first', False):
-                first_partitions.append(partition)
-            else:
-                remaining_partitions.append(partition)
-
-        return {'first': first_partitions, 'remaining': remaining_partitions}
-
-    partition_groups = split_partitions(large_table_partitions)
-
     # Transfer regular tables in parallel
     regular_transfer_results = transfer_table_data.expand(table_info=regular_tables)
 
-    @task
-    def get_first_partitions(groups: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-        return groups.get('first', [])
-
-    @task
-    def get_remaining_partitions(groups: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-        return groups.get('remaining', [])
-
-    first_partitions_list = get_first_partitions(partition_groups)
-    remaining_partitions_list = get_remaining_partitions(partition_groups)
-
-    # Transfer partitions
-    first_partition_results = transfer_partition.expand(partition_info=first_partitions_list)
-    remaining_partition_results = transfer_partition.expand(partition_info=remaining_partitions_list)
-    first_partition_results >> remaining_partition_results
+    # Transfer all partitions in parallel (no sequential dependency needed since
+    # truncate already happened in create_target_tables)
+    partition_transfer_results = transfer_partition.expand(partition_info=large_table_partitions)
 
     # Collect all transfer results
     @task(trigger_rule="all_done")
@@ -522,7 +496,7 @@ def postgres_to_postgres_migration():
         return all_results
 
     transfer_results = collect_all_results()
-    [regular_transfer_results, first_partition_results, remaining_partition_results] >> transfer_results
+    [regular_transfer_results, partition_transfer_results] >> transfer_results
 
     # Post-transfer tasks
     logged_status = convert_tables_to_logged(transfer_results)
