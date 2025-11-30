@@ -72,18 +72,31 @@ PARTITION_COUNT = 8
 
 ## Performance Results
 
-With 1M threshold and 8 partitions (Stack Overflow 2010 dataset, 17.8M rows):
+With 1M threshold, 8 partitions, and PostgreSQL tuning (Stack Overflow 2010 dataset, 17.8M rows):
 
 | Configuration | Duration | Improvement |
 |--------------|----------|-------------|
-| 2M threshold (old) | 2:26 | - |
-| **1M threshold** | **1:55** | **21% faster** |
+| 2M threshold (baseline) | 2:26 | - |
+| 1M threshold | 1:55 | 21% faster |
+| **1M threshold + PG tuning** | **1:43** | **29% faster** |
 
 Tables partitioned with 1M threshold:
 - votes (9.4M rows) → 8 partitions
 - posts (3.7M rows) → 8 partitions
 - comments (3.3M rows) → 8 partitions
 - badges (1.1M rows) → 8 partitions
+
+## PostgreSQL Session Tuning
+
+The pipeline automatically applies session-level settings for bulk loading:
+
+```sql
+SET maintenance_work_mem = '256MB';  -- More memory for maintenance ops
+SET work_mem = '128MB';               -- More memory for complex operations
+SET synchronous_commit = off;         -- Faster writes (still durable)
+```
+
+These settings are applied per-connection and reset when the connection is released.
 
 ## Task Flow
 

@@ -95,6 +95,8 @@ class DataTransfer:
     def _target_connection(self):
         conn = self._acquire_connection(DataTransfer._target_pools, self._target_conn_id, self.target_hook)
         try:
+            # Apply session-level performance tuning for bulk loads
+            self._apply_bulk_load_settings(conn)
             yield conn
         finally:
             if conn and getattr(conn, "autocommit", False) is False:
@@ -103,6 +105,31 @@ class DataTransfer:
                 except Exception as e:
                     logger.exception("Exception occurred during target PostgreSQL connection rollback")
             self._release_connection(conn, DataTransfer._target_pools, self._target_conn_id)
+
+    def _apply_bulk_load_settings(self, conn) -> None:
+        """Apply PostgreSQL session settings optimized for bulk data loading."""
+        settings = [
+            # Increase memory for maintenance operations (sorting, index creation)
+            ("maintenance_work_mem", "'256MB'"),
+            # Increase memory for complex operations
+            ("work_mem", "'128MB'"),
+            # Disable synchronous commit for faster writes (data is still durable after commit)
+            ("synchronous_commit", "off"),
+        ]
+        try:
+            with conn.cursor() as cursor:
+                for param, value in settings:
+                    try:
+                        cursor.execute(f"SET {param} = {value}")
+                    except Exception as e:
+                        logger.debug(f"Could not set {param}: {e}")
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"Could not apply bulk load settings: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
     def transfer_table(
         self,
