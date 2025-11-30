@@ -218,24 +218,14 @@ def postgres_to_postgres_migration():
         generator = ddl_generator.DDLGenerator(params["target_conn_id"])
         prepared_tables = []
 
-        # Disable FK triggers on all existing tables to allow parallel loading
-        from airflow.providers.postgres.hooks.postgres import PostgresHook
-        postgres_hook = PostgresHook(postgres_conn_id=params["target_conn_id"])
-
-        for table_schema in tables_schema:
-            table_name = table_schema["table_name"]
-            if generator.table_exists(table_name, target_schema):
-                postgres_hook.run(f"ALTER TABLE {target_schema}.{table_name} DISABLE TRIGGER ALL", autocommit=True)
-                logger.info(f"Disabled triggers on {target_schema}.{table_name}")
-
         for table_schema in tables_schema:
             table_name = table_schema["table_name"]
 
             try:
                 if generator.table_exists(table_name, target_schema):
-                    # Table exists - truncate it (CASCADE needed for FK references)
+                    # Table exists - truncate it (no FKs in target, so no CASCADE needed)
                     logger.info(f"Truncating existing table {target_schema}.{table_name}")
-                    truncate_stmt = generator.generate_truncate_table(table_name, target_schema, cascade=True)
+                    truncate_stmt = generator.generate_truncate_table(table_name, target_schema, cascade=False)
                     generator.execute_ddl([truncate_stmt], transaction=False)
                     logger.info(f"✓ Truncated table {table_name}")
                 else:
@@ -501,7 +491,11 @@ def postgres_to_postgres_migration():
         **context
     ) -> str:
         """
-        Re-enable triggers and optionally create foreign key constraints after data transfer.
+        Optionally create foreign key constraints after data transfer.
+
+        Note: Foreign keys are disabled by default since target only needs
+        primary keys for data warehouse use cases. FKs would slow down
+        parallel data loading.
 
         Args:
             tables_schema: Original table schemas with foreign key definitions
@@ -511,26 +505,15 @@ def postgres_to_postgres_migration():
             Status message
         """
         params = context["params"]
-        target_schema = params["target_schema"]
-
-        from airflow.providers.postgres.hooks.postgres import PostgresHook
-        postgres_hook = PostgresHook(postgres_conn_id=params["target_conn_id"])
-        generator = ddl_generator.DDLGenerator(params["target_conn_id"])
-
-        # Re-enable triggers on all tables (disabled during truncate for parallel loading)
-        for table_schema in tables_schema:
-            table_name = table_schema["table_name"]
-            if generator.table_exists(table_name, target_schema):
-                postgres_hook.run(f"ALTER TABLE {target_schema}.{table_name} ENABLE TRIGGER ALL", autocommit=True)
-                logger.info(f"Re-enabled triggers on {target_schema}.{table_name}")
 
         if not params["create_foreign_keys"]:
             logger.info("Skipping foreign key creation (disabled by parameter)")
-            return "Foreign keys skipped, triggers re-enabled"
+            return "Foreign keys skipped"
 
         # Only create foreign keys for successfully transferred tables
         successful_tables = {r["table_name"] for r in transfer_results if r.get("success", False)}
 
+        generator = ddl_generator.DDLGenerator(params["target_conn_id"])
         fk_count = 0
 
         for table_schema in tables_schema:
