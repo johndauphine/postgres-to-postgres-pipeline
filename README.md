@@ -8,7 +8,7 @@ An Apache Airflow pipeline for automated, full-refresh migrations from PostgreSQ
 - **Streaming Data Transfer**: Move data efficiently using server-side cursors, keyset pagination, and PostgreSQL's COPY protocol
 - **Validation**: Standalone validation DAG verifies migration success through row count comparisons
 - **Parallelization**: Transfer multiple tables concurrently using Airflow's dynamic task mapping
-- **Large Table Partitioning**: Automatically partitions tables >5M rows into parallel chunks by primary key range
+- **Large Table Partitioning**: Automatically partitions tables >1M rows into 8 parallel chunks by primary key range
 
 ## Quick Start
 
