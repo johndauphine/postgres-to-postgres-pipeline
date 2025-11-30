@@ -42,11 +42,10 @@ class SchemaExtractor:
             c.oid AS object_id,
             NULL AS create_date,
             NULL AS modify_date,
-            COALESCE(s.n_live_tup, 0) AS row_count
+            COALESCE(c.reltuples::bigint, 0) AS row_count
         FROM information_schema.tables t
         JOIN pg_catalog.pg_class c ON c.relname = t.table_name
         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace AND n.nspname = t.table_schema
-        LEFT JOIN pg_stat_user_tables s ON s.schemaname = t.table_schema AND s.relname = t.table_name
         WHERE t.table_schema = %s
           AND t.table_type = 'BASE TABLE'
         ORDER BY t.table_name

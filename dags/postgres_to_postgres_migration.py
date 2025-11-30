@@ -220,9 +220,9 @@ def postgres_to_postgres_migration():
         return prepared_tables
 
     # Threshold for partitioning large tables (rows)
-    # Lowered from 5M to 2M to partition more tables for better parallelism
-    LARGE_TABLE_THRESHOLD = 2_000_000
-    # Increased from 4 to 8 for more parallel workers per large table
+    # Lowered from 2M to 1M to partition more tables for better parallelism
+    LARGE_TABLE_THRESHOLD = 1_000_000
+    # 8 parallel workers per large table
     PARTITION_COUNT = 8
 
     @task

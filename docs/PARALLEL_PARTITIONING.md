@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the automatic partitioning feature that parallelizes the transfer of large tables (>5M rows) by splitting them into multiple partitions based on primary key ranges.
+This document describes the automatic partitioning feature that parallelizes the transfer of large tables (>1M rows) by splitting them into multiple partitions based on primary key ranges.
 
 ## How It Works
 
@@ -10,8 +10,8 @@ This document describes the automatic partitioning feature that parallelizes the
 Tables are automatically identified for partitioning based on row count:
 
 ```python
-LARGE_TABLE_THRESHOLD = 5_000_000  # 5 million rows
-PARTITION_COUNT = 4                 # Number of parallel partitions
+LARGE_TABLE_THRESHOLD = 1_000_000  # 1 million rows
+PARTITION_COUNT = 8                 # Number of parallel partitions
 ```
 
 Any table exceeding the threshold is automatically partitioned.
@@ -53,33 +53,37 @@ transfer_partition[3] ──┘
 ## Configuration
 
 ### Adjusting Thresholds
-Edit the constants in `dags/mssql_to_postgres_migration.py`:
+Edit the constants in `dags/postgres_to_postgres_migration.py`:
 
 ```python
 # Threshold for partitioning large tables (rows)
-LARGE_TABLE_THRESHOLD = 5_000_000
+LARGE_TABLE_THRESHOLD = 1_000_000
 
 # Number of partitions per large table
-PARTITION_COUNT = 4
+PARTITION_COUNT = 8
 ```
 
 ### Partition Count Recommendations
 | Table Size | Recommended Partitions |
 |------------|----------------------|
-| 5-10M rows | 4 partitions |
-| 10-50M rows | 8 partitions |
-| 50M+ rows | 16 partitions |
+| 1-5M rows | 8 partitions (default) |
+| 5-10M rows | 8-16 partitions |
+| 10M+ rows | 16 partitions |
 
 ## Performance Results
 
-### Before Optimization
-- Votes table (10.1M rows): ~115 seconds
-- Total migration: ~3 minutes
+With 1M threshold and 8 partitions (Stack Overflow 2010 dataset, 17.8M rows):
 
-### After Optimization
-- Votes table (10.1M rows): ~50 seconds (4 partitions)
-- Total migration: ~2.5 minutes
-- **Improvement: ~25% faster overall**
+| Configuration | Duration | Improvement |
+|--------------|----------|-------------|
+| 2M threshold (old) | 2:26 | - |
+| **1M threshold** | **1:55** | **21% faster** |
+
+Tables partitioned with 1M threshold:
+- votes (9.4M rows) → 8 partitions
+- posts (3.7M rows) → 8 partitions
+- comments (3.3M rows) → 8 partitions
+- badges (1.1M rows) → 8 partitions
 
 ## Task Flow
 
@@ -94,7 +98,7 @@ create_target_tables
 prepare_regular_tables    prepare_large_table_partitions
         │                      │
         ▼                      ▼
-transfer_table_data[0-7]  transfer_partition[0-3]
+transfer_table_data[0-N]  transfer_partition[0-31]
         │                      │
         └──────────┬───────────┘
                    ▼
