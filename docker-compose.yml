@@ -1,10 +1,14 @@
 # Docker Compose for PostgreSQL source and target databases
+#
+# Container names match Airflow connection hostnames for consistency.
+# After starting, connect to Airflow network with:
+#   ./scripts/connect-databases.sh
 
 services:
   # PostgreSQL 16 for source database
   postgres-source:
     image: postgres:16-alpine
-    container_name: pg-source
+    container_name: postgres-source
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=PostgresPassword123
@@ -14,8 +18,6 @@ services:
       - "5434:5432"
     volumes:
       - postgres_source_data:/var/lib/postgresql/data
-    networks:
-      - migration_network
     mem_limit: 4g
     mem_reservation: 2g
     cpus: 2
@@ -29,7 +31,7 @@ services:
   # PostgreSQL 16 for target database
   postgres-target:
     image: postgres:16-alpine
-    container_name: pg-target
+    container_name: postgres-target
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=PostgresPassword123
@@ -39,8 +41,6 @@ services:
       - "5435:5432"
     volumes:
       - postgres_target_data:/var/lib/postgresql/data
-    networks:
-      - migration_network
     mem_limit: 4g
     mem_reservation: 2g
     cpus: 2
@@ -56,8 +56,3 @@ volumes:
     driver: local
   postgres_target_data:
     driver: local
-
-networks:
-  migration_network:
-    name: postgres-to-postgres-pipeline_886850_airflow
-    external: true

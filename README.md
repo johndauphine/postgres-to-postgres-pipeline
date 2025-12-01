@@ -24,8 +24,8 @@ docker-compose up -d
 ```
 
 This starts:
-- **pg-source**: Source database on port 5434
-- **pg-target**: Target database on port 5435
+- **postgres-source**: Source database on port 5434 (database: `source_db`)
+- **postgres-target**: Target database on port 5435 (database: `target_db`)
 
 ### 2. Start Airflow
 
@@ -35,51 +35,24 @@ astro dev start
 
 Access the Airflow UI at http://localhost:8080
 
+Connections are auto-configured via `airflow_settings.yaml`.
+
 ### 3. Connect Databases to Airflow Network
 
 ```bash
-# Find the Airflow network name
-NETWORK=$(docker network ls --format '{{.Name}}' | grep airflow)
-
-# Connect PostgreSQL containers
-docker network connect $NETWORK pg-source
-docker network connect $NETWORK pg-target
+./scripts/connect-databases.sh
 ```
 
-### 4. Add Airflow Connections
+### 4. Run Migration
+
+**Option A: Using pg_dump (recommended for simple migrations)**
 
 ```bash
-SCHEDULER=$(docker ps --format '{{.Names}}' | grep scheduler)
-
-# Source connection
-docker exec $SCHEDULER airflow connections add postgres_source \
-  --conn-type postgres \
-  --conn-host pg-source \
-  --conn-schema source_db \
-  --conn-login postgres \
-  --conn-password PostgresPassword123 \
-  --conn-port 5432
-
-# Target connection
-docker exec $SCHEDULER airflow connections add postgres_target \
-  --conn-type postgres \
-  --conn-host pg-target \
-  --conn-schema target_db \
-  --conn-login postgres \
-  --conn-password PostgresPassword123 \
-  --conn-port 5432
+docker exec postgres-source pg_dump -U postgres -d source_db --schema=public --no-owner --no-acl | \
+  docker exec -i postgres-target psql -U postgres -d target_db
 ```
 
-### 5. Run Migration
-
-**Option A: Using pg_dump (recommended)**
-
-```bash
-docker exec pg-source pg_dump -U postgres -d source_db --schema=public --no-owner --no-acl | \
-  docker exec -i pg-target psql -U postgres -d target_db
-```
-
-**Option B: Using Airflow DAG**
+**Option B: Using Airflow DAG (recommended for large datasets)**
 
 ```bash
 SCHEDULER=$(docker ps --format '{{.Names}}' | grep scheduler)
