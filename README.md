@@ -35,7 +35,7 @@ astro dev start
 
 Access the Airflow UI at http://localhost:8080
 
-Connections are auto-configured via `airflow_settings.yaml`.
+Connections are auto-configured via `.env` file (environment variables).
 
 ### 3. Connect Databases to Airflow Network
 

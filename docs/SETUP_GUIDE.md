@@ -34,7 +34,7 @@ This starts 5 Airflow containers:
 - Triggerer
 - PostgreSQL (Airflow metadata)
 
-Connections are auto-configured via `airflow_settings.yaml`.
+Connections are auto-configured via `.env` file (environment variables).
 
 ### 3. Connect PostgreSQL Databases to Airflow Network
 
@@ -208,7 +208,7 @@ If Airflow tasks fail with connection errors, ensure the PostgreSQL containers a
 
 ### Connections Not Found
 
-Connections are auto-configured via `airflow_settings.yaml`. If they're missing, restart Airflow:
+Connections are auto-configured via `.env` file (environment variables). If they're missing, restart Airflow:
 
 ```bash
 astro dev restart

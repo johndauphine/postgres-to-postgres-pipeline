@@ -102,7 +102,7 @@ The project uses Astronomer Runtime v3.1-5 (Dockerfile). When modifying dependen
 1. **Python packages**: Add to `requirements.txt`
 2. **OS packages**: Add to `packages.txt`
 3. **Environment variables**: Use `.env` file (local only)
-4. **Connections/Variables**: Configure in `airflow_settings.yaml` (local only)
+4. **Connections/Variables**: Configure in `.env` file using `AIRFLOW_CONN_*` and `AIRFLOW_VAR_*` environment variables
 
 ### Local Development Environment
 
@@ -110,34 +110,24 @@ When `astro dev start` is running:
 - Airflow UI: http://localhost:8080/ (no auth required locally)
 - PostgreSQL (Airflow metadata): localhost:5432/postgres (user: postgres, pass: postgres)
 - PostgreSQL Source: localhost:5434/source_db (user: postgres, pass: PostgresPassword123)
-- PostgreSQL Target: localhost:5433/target_db (user: postgres, pass: PostgresPassword123)
+- PostgreSQL Target: localhost:5435/target_db (user: postgres, pass: PostgresPassword123)
 - Five containers run: postgres, scheduler, dag-processor, webserver, triggerer
 
 ### Connection and Variable Management
 
-For local development, define connections and variables in `airflow_settings.yaml`:
-```yaml
-connections:
-  - conn_id: postgres_source
-    conn_type: postgres
-    conn_host: postgres-source
-    conn_schema: source_db
-    conn_login: postgres
-    conn_password: PostgresPassword123
-    conn_port: 5432
+For local development, define connections and variables in `.env` file using environment variables:
+```bash
+# Airflow connections as environment variables
+# Format: AIRFLOW_CONN_{CONN_ID}='{conn_type}://{login}:{password}@{host}:{port}/{schema}'
 
-  - conn_id: postgres_target
-    conn_type: postgres
-    conn_host: postgres-target
-    conn_schema: target_db
-    conn_login: postgres
-    conn_password: PostgresPassword123
-    conn_port: 5432
+AIRFLOW_CONN_POSTGRES_SOURCE='postgresql://postgres:PostgresPassword123@postgres-source:5432/source_db'
+AIRFLOW_CONN_POSTGRES_TARGET='postgresql://postgres:PostgresPassword123@postgres-target:5432/target_db'
 
-variables:
-  - variable_name: target_schema
-    variable_value: public
+# Airflow variables
+AIRFLOW_VAR_TARGET_SCHEMA='public'
 ```
+
+Note: The `airflow_settings.yaml` approach has known issues with Airflow 3 / Astro CLI. Environment variables are more reliable.
 
 ### DAG File Structure
 
