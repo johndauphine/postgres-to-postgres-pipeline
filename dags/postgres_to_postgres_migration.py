@@ -220,10 +220,16 @@ def postgres_to_postgres_migration():
         return prepared_tables
 
     # Threshold for partitioning large tables (rows)
-    # Lowered from 2M to 1M to partition more tables for better parallelism
     LARGE_TABLE_THRESHOLD = 1_000_000
-    # 8 parallel workers per large table
-    PARTITION_COUNT = 8
+
+    def get_partition_count(row_count: int) -> int:
+        """Determine partition count based on table size."""
+        if row_count >= 10_000_000:  # 10M+ rows
+            return 16
+        elif row_count >= 5_000_000:  # 5-10M rows
+            return 12
+        else:  # 1-5M rows
+            return 8
 
     @task
     def prepare_regular_tables(created_tables: List[Dict[str, Any]], **context) -> List[Dict[str, Any]]:
@@ -305,15 +311,18 @@ def postgres_to_postgres_migration():
                 logger.warning(f"Invalid PK range for {safe_table_name}, skipping partitioning")
                 continue
 
+            # Dynamic partition count based on table size
+            partition_count = get_partition_count(row_count)
+
             id_range = max_id - min_id + 1
-            chunk_size = id_range // PARTITION_COUNT
+            chunk_size = id_range // partition_count
 
-            logger.info(f"  PK range: {min_id:,} to {max_id:,} (chunk size: {chunk_size:,})")
+            logger.info(f"  PK range: {min_id:,} to {max_id:,} ({partition_count} partitions, chunk size: {chunk_size:,})")
 
-            for i in range(PARTITION_COUNT):
+            for i in range(partition_count):
                 start_id = min_id + (i * chunk_size)
 
-                if i == PARTITION_COUNT - 1:
+                if i == partition_count - 1:
                     where_clause = f'"{safe_pk_column}" >= {start_id}'
                 else:
                     end_id = min_id + ((i + 1) * chunk_size) - 1
@@ -325,12 +334,11 @@ def postgres_to_postgres_migration():
                     'partition_index': i,
                     'where_clause': where_clause,
                     'pk_column': safe_pk_column,
-                    'estimated_rows': row_count // PARTITION_COUNT,
-                    # truncate_first no longer needed - truncate happens in create_target_tables
+                    'estimated_rows': row_count // partition_count,
                 }
                 partitions.append(partition_info)
 
-            logger.info(f"  Created {PARTITION_COUNT} partitions for {safe_table_name}")
+            logger.info(f"  Created {partition_count} partitions for {safe_table_name}")
 
         logger.info(f"Total: {len(partitions)} partitions")
         return partitions
