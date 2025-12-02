@@ -44,7 +44,77 @@ Connections are auto-configured via `.env` file (environment variables).
 
 This script automatically finds the Airflow network and connects both database containers.
 
-### 4. Create Test Data in Source Database
+### 4. Load Test Data in Source Database
+
+You have two options for test data:
+
+#### Option A: StackOverflow 2010 Dataset (Recommended for large-scale testing)
+
+This is a real-world dataset with ~17.8 million rows, ideal for testing parallel partitioning and performance.
+
+**Prerequisites:** Install a BitTorrent client (aria2 recommended)
+
+```bash
+# Install aria2 (Ubuntu/Debian)
+sudo apt-get install -y aria2
+
+# Create data directory
+mkdir -p stackoverflow_data
+cd stackoverflow_data
+
+# Download the PostgreSQL dump via torrent (~1.4 GB)
+aria2c --seed-time=0 "magnet:?xt=urn:btih:VCX26QHSFMD6ELDZDGBEAHZBJS7Y3633&dn=stackoverflow-postgres-2010-v0.1&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
+
+# Or download the torrent file first
+curl -L -o stackoverflow-postgres-2010-v0.1.torrent \
+  "https://downloads.smartpostgres.com/stackoverflow-postgres-2010-v0.1.torrent"
+aria2c --seed-time=0 ./stackoverflow-postgres-2010-v0.1.torrent
+```
+
+**Restore to source database:**
+
+```bash
+# Copy dump file to container
+docker cp stackoverflow-postgres-2010-v0.1/dump-stackoverflow2010-202408101013.sql \
+  postgres-source:/tmp/stackoverflow.sql
+
+# Clean existing schema and restore
+docker exec postgres-source psql -U postgres -d source_db -c \
+  "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+
+docker exec postgres-source pg_restore -U postgres -d source_db \
+  /tmp/stackoverflow.sql
+```
+
+**Verify the data:**
+
+```bash
+docker exec postgres-source psql -U postgres -d source_db -c "
+SELECT 'votes' as table_name, COUNT(*) as rows FROM votes
+UNION ALL SELECT 'posts', COUNT(*) FROM posts
+UNION ALL SELECT 'comments', COUNT(*) FROM comments
+UNION ALL SELECT 'badges', COUNT(*) FROM badges
+UNION ALL SELECT 'users', COUNT(*) FROM users
+ORDER BY rows DESC;
+"
+```
+
+Expected output (~17.8 million rows):
+```
+ table_name |   rows
+------------+---------
+ votes      | 9463619
+ posts      | 3680688
+ comments   | 3353493
+ badges     | 1098220
+ users      |  298611
+```
+
+> **Source:** [Smart Postgres - Stack Overflow Sample Database](https://smartpostgres.com/posts/announcing-early-access-to-the-stack-overflow-sample-database-download-for-postgres/)
+
+#### Option B: Simple Sample Data (Quick setup)
+
+For basic testing with minimal data:
 
 ```bash
 docker exec postgres-source psql -U postgres -d source_db -c "
