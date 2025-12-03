@@ -48,27 +48,81 @@ This script automatically finds the Airflow network and connects both database c
 
 You have two options for test data:
 
-#### Option A: StackOverflow 2010 Dataset (Recommended for large-scale testing)
+#### Option A: StackOverflow 2013 Dataset (Recommended for large-scale testing)
 
-This is a real-world dataset with ~17.8 million rows, ideal for testing parallel partitioning and performance.
+This is a real-world dataset with ~106.5 million rows, ideal for testing parallel partitioning and performance at scale.
+
+```bash
+# Create data directory
+mkdir -p data
+cd data
+
+# Download the PostgreSQL dump (~8 GB compressed, ~28 GB uncompressed)
+curl -L -o stackoverflow2013.sql.gz \
+  "https://ajaydwivedi.com/share-with-others/stackoverflow2013.sql.gz"
+```
+
+**Restore to source database:**
+
+```bash
+# Copy dump file to container
+docker cp stackoverflow2013.sql.gz postgres-source:/tmp/
+
+# Clean existing schema and restore (streams directly, no need to decompress first)
+docker exec postgres-source psql -U postgres -d source_db -c \
+  "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+
+docker exec postgres-source bash -c \
+  "gunzip -c /tmp/stackoverflow2013.sql.gz | psql -U postgres -d source_db"
+```
+
+**Verify the data:**
+
+```bash
+docker exec postgres-source psql -U postgres -d source_db -c "
+SELECT 'votes' as table_name, COUNT(*) as rows FROM votes
+UNION ALL SELECT 'comments', COUNT(*) FROM comments
+UNION ALL SELECT 'posts', COUNT(*) FROM posts
+UNION ALL SELECT 'badges', COUNT(*) FROM badges
+UNION ALL SELECT 'users', COUNT(*) FROM users
+UNION ALL SELECT 'postlinks', COUNT(*) FROM postlinks
+ORDER BY rows DESC;
+"
+```
+
+Expected output (~106.5 million rows):
+```
+ table_name |   rows
+------------+----------
+ votes      | 52928720
+ comments   | 24534730
+ posts      | 17142169
+ badges     |  8042005
+ users      |  2465713
+ postlinks  |  1421208
+```
+
+> **Source:** [Ajay Dwivedi - StackOverflow 2013 PostgreSQL Database](https://ajaydwivedi.com/share-with-others/stackoverflow2013.sql.gz)
+
+#### Option B: StackOverflow 2010 Dataset (Smaller alternative)
+
+A smaller real-world dataset with ~17.8 million rows.
 
 **Prerequisites:** Install a BitTorrent client (aria2 recommended)
 
 ```bash
+# Install aria2 (macOS)
+brew install aria2
+
 # Install aria2 (Ubuntu/Debian)
 sudo apt-get install -y aria2
 
 # Create data directory
-mkdir -p stackoverflow_data
-cd stackoverflow_data
+mkdir -p data
+cd data
 
 # Download the PostgreSQL dump via torrent (~1.4 GB)
 aria2c --seed-time=0 "magnet:?xt=urn:btih:VCX26QHSFMD6ELDZDGBEAHZBJS7Y3633&dn=stackoverflow-postgres-2010-v0.1&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
-
-# Or download the torrent file first
-curl -L -o stackoverflow-postgres-2010-v0.1.torrent \
-  "https://downloads.smartpostgres.com/stackoverflow-postgres-2010-v0.1.torrent"
-aria2c --seed-time=0 ./stackoverflow-postgres-2010-v0.1.torrent
 ```
 
 **Restore to source database:**
@@ -112,7 +166,7 @@ Expected output (~17.8 million rows):
 
 > **Source:** [Smart Postgres - Stack Overflow Sample Database](https://smartpostgres.com/posts/announcing-early-access-to-the-stack-overflow-sample-database-download-for-postgres/)
 
-#### Option B: Simple Sample Data (Quick setup)
+#### Option C: Simple Sample Data (Quick setup)
 
 For basic testing with minimal data:
 
@@ -310,5 +364,6 @@ The following fixes were needed for Airflow 3 compatibility:
 3. **Project name** in `.astro/config.yaml`:
    - Updated from `mssql-to-postgres-pipeline` to `postgres-to-postgres-pipeline`
 
-4. **Airflow connections** in `airflow_settings.yaml`:
-   - Added `postgres_source` and `postgres_target` connection configurations
+4. **Airflow connections** via `.env` file:
+   - Using `AIRFLOW_CONN_*` environment variables for reliable connection configuration
+   - Note: `airflow_settings.yaml` is unreliable with Airflow 3 / Astro CLI
