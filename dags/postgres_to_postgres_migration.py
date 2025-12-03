@@ -223,13 +223,17 @@ def postgres_to_postgres_migration():
     LARGE_TABLE_THRESHOLD = 1_000_000
 
     def get_partition_count(row_count: int) -> int:
-        """Determine partition count based on table size."""
+        """Determine partition count based on table size.
+
+        Conservative parallelism (8 concurrent tasks max) to minimize I/O contention.
+        Benchmarked optimal for Docker Desktop on Mac with 14-core / 36GB RAM.
+        """
         if row_count >= 10_000_000:  # 10M+ rows
-            return 16
-        elif row_count >= 5_000_000:  # 5-10M rows
-            return 12
-        else:  # 1-5M rows
             return 8
+        elif row_count >= 5_000_000:  # 5-10M rows
+            return 6
+        else:  # 1-5M rows
+            return 4
 
     @task
     def prepare_regular_tables(created_tables: List[Dict[str, Any]], **context) -> List[Dict[str, Any]]:
