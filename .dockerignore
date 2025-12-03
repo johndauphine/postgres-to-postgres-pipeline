@@ -7,3 +7,4 @@ logs/
 airflow.db
 airflow.cfg
 stackoverflow_db/
+stackoverflow_data/
