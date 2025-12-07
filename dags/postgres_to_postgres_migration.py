@@ -601,33 +601,46 @@ def postgres_to_postgres_migration():
     # Collect all transfer results
     @task(trigger_rule="all_done")
     def collect_all_results(**context) -> List[Dict[str, Any]]:
-        """Collect and aggregate results from all transfer tasks."""
+        """Collect and aggregate results from all transfer tasks.
+
+        Fixed: Improved XCom retrieval with proper error logging for Airflow 3.0.2
+        dynamic task mapping compatibility.
+        """
         ti = context['ti']
+        dag_run = context['dag_run']
         all_results = []
 
+        # Collect results from regular table transfers
+        logger.info("Collecting results from transfer_table_data tasks...")
         try:
             regular = ti.xcom_pull(task_ids='transfer_table_data', map_indexes=None)
+            logger.info(f"transfer_table_data XCom pull returned: type={type(regular)}, value={regular}")
             if regular:
                 if isinstance(regular, list):
                     all_results.extend([r for r in regular if r])
-                else:
+                elif isinstance(regular, dict):
                     all_results.append(regular)
+            logger.info(f"Collected {len(all_results)} regular table results")
         except Exception as e:
             logger.warning(f"Failed to retrieve regular table results: {e}")
 
         from collections import defaultdict
         table_partitions = defaultdict(list)
 
+        # Collect results from partition transfers
+        logger.info("Collecting results from transfer_partition tasks...")
         try:
             partitions = ti.xcom_pull(task_ids='transfer_partition', map_indexes=None)
+            logger.info(f"transfer_partition XCom pull returned: type={type(partitions)}, value={partitions}")
             if partitions:
                 if not isinstance(partitions, list):
                     partitions = [partitions]
                 for p in partitions:
-                    if p:
+                    if p and isinstance(p, dict):
                         table_partitions[p.get('table_name', 'Unknown')].append(p)
-        except:
-            pass
+                logger.info(f"Collected {len(partitions)} partition results across {len(table_partitions)} tables")
+        except Exception as e:
+            logger.warning(f"Failed to retrieve partition results: {e}")
 
         for table_name, parts in table_partitions.items():
             total_rows = sum(p.get('rows_transferred', 0) for p in parts)
@@ -640,7 +653,7 @@ def postgres_to_postgres_migration():
             })
             logger.info(f"Aggregated {len(parts)} partitions for {table_name}: {total_rows:,} total rows")
 
-        logger.info(f"Collected results for {len(all_results)} tables")
+        logger.info(f"Collected results for {len(all_results)} tables: {[r.get('table_name') for r in all_results]}")
         return all_results
 
     transfer_results = collect_all_results()
