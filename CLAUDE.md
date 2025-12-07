@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an Apache Airflow project using vanilla Apache Airflow 2.10.4 with Docker Compose for orchestrating data pipelines. The project is designed for ETL processes from PostgreSQL source to PostgreSQL target.
+This is an Apache Airflow project using vanilla Apache Airflow 3.0.2 with Docker Compose for orchestrating data pipelines. The project is designed for ETL processes from PostgreSQL source to PostgreSQL target.
 
 ## Common Development Commands
 
@@ -108,7 +108,7 @@ All DAGs must meet these criteria (enforced by tests/dags/test_dag_example.py):
 
 ### Docker and Deployment
 
-The project uses Apache Airflow 2.10.4 (Dockerfile). When modifying dependencies:
+The project uses Apache Airflow 3.0.2 (Dockerfile). When modifying dependencies:
 
 1. **Python packages**: Add to `requirements.txt`
 2. **Environment variables**: Use `.env` file

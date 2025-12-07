@@ -236,10 +236,9 @@ docker-compose up -d
 
 ## Dependencies
 
-- Apache Airflow 2.10.4
+- Apache Airflow 3.0.2
 - apache-airflow-providers-postgres >= 5.12.0
 - psycopg2-binary
-- pg8000 >= 1.30.0
 
 ## License
 
