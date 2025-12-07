@@ -32,6 +32,9 @@ x-airflow-common:
     # Connection environment variables
     AIRFLOW_CONN_POSTGRES_SOURCE: ${AIRFLOW_CONN_POSTGRES_SOURCE:-postgresql://postgres:PostgresPassword123@postgres-source:5432/source_db}
     AIRFLOW_CONN_POSTGRES_TARGET: ${AIRFLOW_CONN_POSTGRES_TARGET:-postgresql://postgres:PostgresPassword123@postgres-target:5432/target_db}
+    # Test connections for partition testing
+    AIRFLOW_CONN_POSTGRES_PARTITION_SOURCE: ${AIRFLOW_CONN_POSTGRES_PARTITION_SOURCE:-postgresql://postgres:PostgresPassword123@postgres-source:5432/partition_test_source}
+    AIRFLOW_CONN_POSTGRES_PARTITION_TARGET: ${AIRFLOW_CONN_POSTGRES_PARTITION_TARGET:-postgresql://postgres:PostgresPassword123@postgres-target:5432/partition_test_target}
     # Variables
     AIRFLOW_VAR_TARGET_SCHEMA: ${AIRFLOW_VAR_TARGET_SCHEMA:-public}
     # Python path for include modules
