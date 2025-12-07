@@ -97,48 +97,50 @@ def validate_migration_env():
             source_conn.close()
             return f"PostgreSQL target connection failed: {e}"
 
-        # Discover tables from source
+        # Discover tables from source (just get table names)
         logger.info(f"Discovering tables in {source_schema}...")
 
         discovery_query = """
-            SELECT
-                t.table_name,
-                COALESCE(s.n_live_tup, 0) AS row_count
-            FROM information_schema.tables t
-            LEFT JOIN pg_stat_user_tables s
-                ON s.schemaname = t.table_schema
-                AND s.relname = t.table_name
-            WHERE t.table_schema = %s
-              AND t.table_type = 'BASE TABLE'
-            ORDER BY t.table_name
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = %s
+              AND table_type = 'BASE TABLE'
+            ORDER BY table_name
         """
 
         try:
             source_cursor.execute(discovery_query, (source_schema,))
             source_results = source_cursor.fetchall()
-            source_counts = {
-                row[0]: row[1]
-                for row in source_results
+            table_names = [
+                row[0] for row in source_results
                 if row[0] not in exclude_tables
-            }
+            ]
         except Exception as e:
             logger.error(f"Failed to query source: {e}")
             source_conn.close()
             target_conn.close()
             return f"Failed to query source: {e}"
 
-        # Get target counts
-        logger.info(f"Validating {len(source_counts)} tables...")
+        # Validate each table using actual COUNT(*)
+        logger.info(f"Validating {len(table_names)} tables using exact COUNT(*)...")
 
         results = []
         passed = 0
         failed = 0
         missing = 0
 
-        for table_name in sorted(source_counts.keys()):
-            source_count = source_counts[table_name]
+        for table_name in sorted(table_names):
+            # Query source with actual COUNT(*)
+            try:
+                source_cursor.execute(
+                    f'SELECT COUNT(*) FROM {source_schema}."{table_name}"'
+                )
+                source_count = source_cursor.fetchone()[0]
+            except Exception as e:
+                logger.error(f"Failed to count source table {table_name}: {e}")
+                continue
 
-            # Query target
+            # Query target with actual COUNT(*)
             try:
                 target_cursor.execute(
                     f'SELECT COUNT(*) FROM {target_schema}."{table_name}"'
@@ -170,7 +172,7 @@ def validate_migration_env():
         target_conn.close()
 
         # Summary
-        total = len(source_counts)
+        total = len(table_names)
         success_rate = (passed / total * 100) if total > 0 else 0
 
         summary = (

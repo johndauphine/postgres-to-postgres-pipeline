@@ -1,5 +1,5 @@
 # Apache Airflow with PostgreSQL support
-apache-airflow[postgres]==2.10.4
+apache-airflow[postgres]==3.0.2
 
 # Database Providers
 apache-airflow-providers-postgres>=5.12.0

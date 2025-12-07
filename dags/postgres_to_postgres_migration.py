@@ -12,7 +12,7 @@ The DAG is designed for data warehouse use cases where only primary keys are nee
 """
 
 from airflow.decorators import dag, task
-from airflow.datasets import Dataset as Asset
+from airflow.sdk.definitions.asset import Asset
 from airflow.models.param import Param
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from pendulum import datetime
