@@ -16,7 +16,7 @@ from datetime import timedelta
 from urllib.parse import urlparse
 import logging
 import os
-import pg8000
+import psycopg2
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +128,13 @@ def validate_migration_env():
         logger.info(f"Connecting using {source_conn_id} -> {target_conn_id}...")
 
         try:
-            source_conn = pg8000.connect(**source_config)
+            source_conn = psycopg2.connect(
+                host=source_config['host'],
+                port=source_config['port'],
+                dbname=source_config['database'],
+                user=source_config['user'],
+                password=source_config['password'],
+            )
             source_cursor = source_conn.cursor()
             logger.info(f"✓ Connected to source: {source_config['host']}:{source_config['port']}/{source_config['database']}")
         except Exception as e:
@@ -136,7 +142,13 @@ def validate_migration_env():
             return f"PostgreSQL source connection failed: {e}"
 
         try:
-            target_conn = pg8000.connect(**target_config)
+            target_conn = psycopg2.connect(
+                host=target_config['host'],
+                port=target_config['port'],
+                dbname=target_config['database'],
+                user=target_config['user'],
+                password=target_config['password'],
+            )
             target_cursor = target_conn.cursor()
             logger.info(f"✓ Connected to target: {target_config['host']}:{target_config['port']}/{target_config['database']}")
         except Exception as e:
