@@ -192,6 +192,17 @@ docker exec airflow-scheduler airflow dags list-import-errors
 docker exec airflow-scheduler pytest tests/
 ```
 
+### Generate Partition Stress Test Data
+
+Use the helper script to seed large tables in the source DB for partition/keyset regression tests (dense, sparse, and UUID PKs):
+
+```bash
+docker cp scripts/generate_partition_test_data.py airflow-scheduler:/opt/airflow/scripts/
+docker exec airflow-scheduler python /opt/airflow/scripts/generate_partition_test_data.py --drop-existing
+```
+
+See `docs/PARTITION_TEST_DATA.md` for details and host-side options.***
+
 ### View Logs
 
 ```bash
