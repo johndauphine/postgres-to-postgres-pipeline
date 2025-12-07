@@ -37,6 +37,14 @@ x-airflow-common:
     AIRFLOW_CONN_POSTGRES_PARTITION_TARGET: ${AIRFLOW_CONN_POSTGRES_PARTITION_TARGET:-postgresql://postgres:PostgresPassword123@postgres-target:5432/partition_test_target}
     # Variables
     AIRFLOW_VAR_TARGET_SCHEMA: ${AIRFLOW_VAR_TARGET_SCHEMA:-public}
+    # DAG configuration (read from .env)
+    SOURCE_CONN_ID: ${SOURCE_CONN_ID:-postgres_source}
+    TARGET_CONN_ID: ${TARGET_CONN_ID:-postgres_target}
+    SOURCE_SCHEMA: ${SOURCE_SCHEMA:-public}
+    TARGET_SCHEMA: ${TARGET_SCHEMA:-public}
+    CHUNK_SIZE: ${CHUNK_SIZE:-100000}
+    PARTITION_THRESHOLD: ${PARTITION_THRESHOLD:-1000000}
+    MAX_PARTITIONS: ${MAX_PARTITIONS:-8}
     # Python path for include modules
     PYTHONPATH: /opt/airflow
     # Use shared config file for consistent internal_api_secret_key
