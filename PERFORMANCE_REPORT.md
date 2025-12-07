@@ -166,3 +166,76 @@ This was the baseline run with `max_active_tasks=8`, causing partition tasks to 
 3. **High parallelism** - 64+ concurrent tasks for large datasets
 4. **Disable sync commit** - For bulk loading (enable after migration)
 5. **Large WAL size** - 4GB reduces checkpoint frequency
+
+---
+
+## Hardware Comparison
+
+### Tested Systems
+
+| System | CPU | Cores | RAM | OS | Docker Backend |
+|--------|-----|-------|-----|-----|----------------|
+| Mac | Apple M3 Max | 14 | 36 GB | macOS Sequoia | Docker Desktop (native ARM) |
+| Windows | Intel/AMD | 16 | TBD | Windows 11 | Docker Desktop (WSL2) |
+
+### Expected Performance by Platform
+
+| Pipeline | Mac (M3 Max) | Windows (16-core) | Notes |
+|----------|--------------|-------------------|-------|
+| **PG→PG** | 531K rows/sec | ~600K+ rows/sec | Native x86 on Windows |
+| **MSSQL→PG** | 321K rows/sec | ~500K+ rows/sec | No Rosetta overhead on Windows |
+
+### Windows Setup
+
+#### WSL2 Configuration (Recommended)
+
+Create or edit `%UserProfile%\.wslconfig`:
+
+```ini
+[wsl2]
+memory=16GB
+processors=12
+swap=4GB
+```
+
+Restart WSL after changes:
+```powershell
+wsl --shutdown
+```
+
+#### Docker Desktop Settings
+
+1. Enable WSL2 backend (Settings → General → Use WSL 2 based engine)
+2. Resources → WSL Integration → Enable for your distro
+3. Allocate at least 12 CPUs and 12GB RAM
+
+#### Running on Windows
+
+```powershell
+# Pull latest optimizations
+git pull origin main
+
+# Start databases
+docker-compose down
+docker-compose up -d
+
+# Start Airflow
+astro dev restart
+
+# Connect databases to Airflow network
+# On Windows, run this in PowerShell:
+$network = docker network ls --format "{{.Name}}" | Select-String "airflow"
+docker network connect $network postgres-source
+docker network connect $network postgres-target
+
+# Trigger migration
+$scheduler = docker ps --format "{{.Names}}" | Select-String "scheduler"
+docker exec $scheduler airflow dags trigger postgres_to_postgres_migration
+```
+
+### Why Windows May Be Faster
+
+1. **Native x86 SQL Server** - No Rosetta 2 emulation (Mac ARM must emulate x86)
+2. **More CPU cores** - 16 cores vs 14 cores
+3. **WSL2 performance** - Near-native Linux performance for containers
+4. **Native Docker volumes** - Faster disk I/O than Mac's virtualized filesystem
