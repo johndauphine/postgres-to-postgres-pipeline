@@ -67,6 +67,7 @@ def quote_sql_literal(value) -> str:
     schedule=None,
     catchup=False,
     max_active_runs=1,
+    max_active_tasks=64,  # Allow up to 64 concurrent tasks within this DAG
     is_paused_upon_creation=False,
     doc_md=__doc__,
     default_args={
@@ -75,6 +76,7 @@ def quote_sql_literal(value) -> str:
         "retry_delay": timedelta(seconds=30),
         "retry_exponential_backoff": False,
         "max_retry_delay": timedelta(minutes=30),
+        "pool": "default_pool",  # Use default pool for all tasks
     },
     params={
         "source_conn_id": Param(
