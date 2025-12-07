@@ -18,6 +18,7 @@ from pendulum import datetime
 from datetime import timedelta
 from typing import List, Dict, Any
 import logging
+import os
 import re
 
 # Import our custom migration modules
@@ -47,6 +48,18 @@ def validate_sql_identifier(identifier: str, identifier_type: str = "identifier"
         )
 
     return identifier
+
+
+def quote_sql_literal(value) -> str:
+    """
+    Quote a value for use in SQL WHERE clause.
+    Integers are returned as-is, strings/UUIDs are wrapped in single quotes with escaping.
+    """
+    if isinstance(value, int):
+        return str(value)
+    # For strings, UUIDs, and other types - escape single quotes and wrap in quotes
+    escaped = str(value).replace("'", "''")
+    return f"'{escaped}'"
 
 
 @dag(
@@ -105,6 +118,19 @@ def validate_sql_identifier(identifier: str, identifier_type: str = "identifier"
             default=False,
             type="boolean",
             description="Drop and recreate existing tables instead of truncating. Use when source schema has changed."
+        ),
+        "partition_threshold": Param(
+            default=1_000_000,
+            type="integer",
+            minimum=100_000,
+            description="Row count threshold for automatic table partitioning"
+        ),
+        "max_partitions": Param(
+            default=int(os.environ.get('MAX_PARTITIONS', '8')),
+            type="integer",
+            minimum=2,
+            maximum=16,
+            description="Maximum partitions per large table (env: MAX_PARTITIONS)"
         ),
     },
     tags=["migration", "postgres", "etl", "full-refresh"],
@@ -219,30 +245,38 @@ def postgres_to_postgres_migration():
         logger.info(f"Successfully prepared {len(prepared_tables)} tables for data transfer")
         return prepared_tables
 
-    # Threshold for partitioning large tables (rows)
-    LARGE_TABLE_THRESHOLD = 1_000_000
-
-    def get_partition_count(row_count: int) -> int:
+    def get_partition_count(row_count: int, max_partitions: int = 8) -> int:
         """Determine partition count based on table size.
 
-        Conservative parallelism (8 concurrent tasks max) to minimize I/O contention.
-        Benchmarked optimal for Docker Desktop on Mac with 14-core / 36GB RAM.
+        Respects MAX_PARTITIONS environment variable for hardware-specific tuning.
+        Conservative defaults to minimize I/O contention on Docker Desktop / WSL2.
+
+        Args:
+            row_count: Number of rows in the table
+            max_partitions: Maximum partitions allowed (from DAG params or env var)
+
+        Returns:
+            Partition count scaled to table size, capped at max_partitions
         """
         if row_count >= 10_000_000:  # 10M+ rows
-            return 8
+            return max_partitions
         elif row_count >= 5_000_000:  # 5-10M rows
-            return 6
-        else:  # 1-5M rows
-            return 4
+            return min(6, max_partitions)
+        elif row_count >= 2_000_000:  # 2-5M rows
+            return min(4, max_partitions)
+        else:  # 1-2M rows
+            return min(2, max_partitions)
 
     @task
     def prepare_regular_tables(created_tables: List[Dict[str, Any]], **context) -> List[Dict[str, Any]]:
         """Filter out tables that are small enough to transfer without partitioning."""
+        params = context["params"]
+        partition_threshold = params.get("partition_threshold", 1_000_000)
         regular_tables = []
 
         for table_info in created_tables:
             row_count = table_info.get('row_count', 0)
-            if row_count < LARGE_TABLE_THRESHOLD:
+            if row_count < partition_threshold:
                 regular_tables.append(table_info)
             else:
                 logger.info(f"Table {table_info['table_name']} ({row_count:,} rows) will be partitioned")
@@ -252,8 +286,15 @@ def postgres_to_postgres_migration():
 
     @task
     def prepare_large_table_partitions(created_tables: List[Dict[str, Any]], **context) -> List[Dict[str, Any]]:
-        """Create partitions for large tables (>5M rows) using primary key ranges."""
+        """Create partitions for large tables using NTILE-based boundaries.
+
+        Uses PostgreSQL NTILE window function to determine balanced partition boundaries
+        based on actual row distribution, not arithmetic division of ID range.
+        This ensures balanced partitions even with sparse/gapped primary keys.
+        """
         params = context["params"]
+        partition_threshold = params.get("partition_threshold", 1_000_000)
+        max_partitions = params.get("max_partitions", int(os.environ.get('MAX_PARTITIONS', '8')))
         partitions = []
 
         from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -262,7 +303,7 @@ def postgres_to_postgres_migration():
         for table_info in created_tables:
             row_count = table_info.get('row_count', 0)
 
-            if row_count < LARGE_TABLE_THRESHOLD:
+            if row_count < partition_threshold:
                 continue
 
             table_name = table_info['table_name']
@@ -296,53 +337,120 @@ def postgres_to_postgres_migration():
                 logger.error(f"Invalid primary key column for table {safe_table_name}: {e}")
                 continue
 
-            logger.info(f"Partitioning {safe_table_name} by \"{safe_pk_column}\" ({row_count:,} rows)")
+            # Query PK column data type to handle UUID/other types that don't support MIN/MAX
+            pk_type_query = """
+                SELECT data_type
+                FROM information_schema.columns
+                WHERE table_schema = %s AND table_name = %s AND column_name = %s
+            """
+            pk_type_result = source_hook.get_first(pk_type_query, parameters=[safe_source_schema, safe_table_name, pk_column])
+            pk_data_type = pk_type_result[0].lower() if pk_type_result else 'unknown'
+            is_uuid_pk = pk_data_type == 'uuid'
 
-            range_query = f'SELECT MIN("{safe_pk_column}"), MAX("{safe_pk_column}") FROM {safe_source_schema}."{safe_table_name}"'
-            min_max = source_hook.get_first(range_query)
+            # Dynamic partition count based on table size and max_partitions
+            partition_count = get_partition_count(row_count, max_partitions)
 
-            if not min_max or min_max[0] is None:
-                logger.warning(f"Could not get PK range for {safe_table_name}, skipping partitioning")
+            logger.info(f"Partitioning {safe_table_name} by \"{safe_pk_column}\" ({row_count:,} rows, {partition_count} partitions, pk_type={pk_data_type})")
+
+            # Use NTILE-based partitioning for balanced row distribution
+            # This handles sparse IDs and ensures equal row counts per partition
+            # For UUID columns, cast to TEXT for MIN/MAX aggregation (PostgreSQL doesn't support MIN/MAX on UUID)
+            if is_uuid_pk:
+                ntile_query = f"""
+                    WITH numbered AS (
+                        SELECT "{safe_pk_column}",
+                               NTILE({partition_count}) OVER (ORDER BY "{safe_pk_column}") as partition_id
+                        FROM {safe_source_schema}."{safe_table_name}"
+                    )
+                    SELECT partition_id,
+                           MIN("{safe_pk_column}"::TEXT)::UUID as min_pk,
+                           MAX("{safe_pk_column}"::TEXT)::UUID as max_pk,
+                           COUNT(*) as row_count
+                    FROM numbered
+                    GROUP BY partition_id
+                    ORDER BY partition_id
+                """
+            else:
+                ntile_query = f"""
+                    WITH numbered AS (
+                        SELECT "{safe_pk_column}",
+                               NTILE({partition_count}) OVER (ORDER BY "{safe_pk_column}") as partition_id
+                        FROM {safe_source_schema}."{safe_table_name}"
+                    )
+                    SELECT partition_id,
+                           MIN("{safe_pk_column}") as min_pk,
+                           MAX("{safe_pk_column}") as max_pk,
+                           COUNT(*) as row_count
+                    FROM numbered
+                    GROUP BY partition_id
+                    ORDER BY partition_id
+                """
+
+            try:
+                boundaries = source_hook.get_records(ntile_query)
+            except Exception as e:
+                logger.warning(f"NTILE query failed for {safe_table_name}: {e}")
+                # Fallback: Use ROW_NUMBER-based partitioning (works for any PK type)
+                logger.info(f"Falling back to ROW_NUMBER-based partitioning for {safe_table_name}")
+                rows_per_partition = row_count // partition_count
+                boundaries = []
+                for i in range(partition_count):
+                    start_row = i * rows_per_partition + 1
+                    # Last partition takes all remaining rows
+                    end_row = row_count if i == partition_count - 1 else (i + 1) * rows_per_partition
+                    partition_rows = end_row - start_row + 1
+                    # Get boundary PK values using ROW_NUMBER window function
+                    boundary_query = f"""
+                        WITH numbered AS (
+                            SELECT "{safe_pk_column}",
+                                   ROW_NUMBER() OVER (ORDER BY "{safe_pk_column}") as rn
+                            FROM {safe_source_schema}."{safe_table_name}"
+                        )
+                        SELECT
+                            (SELECT "{safe_pk_column}" FROM numbered WHERE rn = {start_row}) as min_pk,
+                            (SELECT "{safe_pk_column}" FROM numbered WHERE rn = {end_row}) as max_pk
+                    """
+                    try:
+                        result = source_hook.get_first(boundary_query)
+                        if result and result[0] is not None:
+                            boundaries.append((i + 1, result[0], result[1], partition_rows))
+                    except Exception as inner_e:
+                        logger.error(f"Failed to get boundary for partition {i + 1}: {inner_e}")
+                if not boundaries:
+                    logger.warning(f"ROW_NUMBER fallback failed for {safe_table_name}")
+                    continue
+                logger.info(f"  Created {len(boundaries)} ROW_NUMBER-based partitions for {safe_table_name}")
+
+            if not boundaries:
+                logger.warning(f"Could not determine partition boundaries for {safe_table_name}")
                 continue
 
-            min_id, max_id = min_max[0], min_max[1]
-
-            if not isinstance(min_id, int) or not isinstance(max_id, int):
-                logger.error(f"Primary key range for {safe_table_name} must be integer")
-                continue
-
-            if max_id < min_id:
-                logger.warning(f"Invalid PK range for {safe_table_name}, skipping partitioning")
-                continue
-
-            # Dynamic partition count based on table size
-            partition_count = get_partition_count(row_count)
-
-            id_range = max_id - min_id + 1
-            chunk_size = id_range // partition_count
-
-            logger.info(f"  PK range: {min_id:,} to {max_id:,} ({partition_count} partitions, chunk size: {chunk_size:,})")
-
-            for i in range(partition_count):
-                start_id = min_id + (i * chunk_size)
-
-                if i == partition_count - 1:
-                    where_clause = f'"{safe_pk_column}" >= {start_id}'
+            for partition_id, min_pk, max_pk, part_rows in boundaries:
+                # Build WHERE clause using actual boundary values
+                # Use quote_sql_literal to properly handle UUID/VARCHAR/string PKs
+                quoted_min = quote_sql_literal(min_pk)
+                quoted_max = quote_sql_literal(max_pk)
+                if partition_id == len(boundaries):
+                    # Last partition: use >= to catch any edge cases
+                    where_clause = f'"{safe_pk_column}" >= {quoted_min}'
+                elif partition_id == 1:
+                    # First partition: use <= max to ensure no gaps
+                    where_clause = f'"{safe_pk_column}" <= {quoted_max}'
                 else:
-                    end_id = min_id + ((i + 1) * chunk_size) - 1
-                    where_clause = f'"{safe_pk_column}" >= {start_id} AND "{safe_pk_column}" <= {end_id}'
+                    # Middle partitions: use BETWEEN for clarity
+                    where_clause = f'"{safe_pk_column}" >= {quoted_min} AND "{safe_pk_column}" <= {quoted_max}'
 
                 partition_info = {
                     **table_info,
-                    'partition_name': f'partition_{i + 1}',
-                    'partition_index': i,
+                    'partition_name': f'partition_{partition_id}',
+                    'partition_index': partition_id - 1,
                     'where_clause': where_clause,
                     'pk_column': safe_pk_column,
-                    'estimated_rows': row_count // partition_count,
+                    'estimated_rows': part_rows,
                 }
                 partitions.append(partition_info)
 
-            logger.info(f"  Created {partition_count} partitions for {safe_table_name}")
+            logger.info(f"  Created {len(boundaries)} NTILE-based partitions for {safe_table_name}")
 
         logger.info(f"Total: {len(partitions)} partitions")
         return partitions

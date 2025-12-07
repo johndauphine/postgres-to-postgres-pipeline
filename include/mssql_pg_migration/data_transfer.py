@@ -14,6 +14,7 @@ from decimal import Decimal
 from io import StringIO, TextIOBase
 import contextlib
 import logging
+import os
 import threading
 import time
 import csv
@@ -48,14 +49,24 @@ class DataTransfer:
         self._init_pool(target_conn_id, self.target_hook, DataTransfer._target_pools)
 
     def _init_pool(self, conn_id: str, hook: PostgresHook, pool_dict: Dict[str, pg_pool.ThreadedConnectionPool]):
-        """Initialize a connection pool if not already exists."""
+        """Initialize a connection pool if not already exists.
+
+        Pool size is configurable via environment variables:
+        - PG_POOL_MINCONN: Minimum connections (default: 1)
+        - PG_POOL_MAXCONN: Maximum connections (default: 8)
+
+        Adjust based on hardware: lower for memory-constrained systems,
+        higher for 64GB+ systems with dedicated database servers.
+        """
         if conn_id not in pool_dict:
             with DataTransfer._pool_lock:
                 if conn_id not in pool_dict:
                     pg_conn = hook.get_connection(conn_id)
+                    minconn = int(os.environ.get('PG_POOL_MINCONN', '1'))
+                    maxconn = int(os.environ.get('PG_POOL_MAXCONN', '8'))
                     pool_dict[conn_id] = pg_pool.ThreadedConnectionPool(
-                        minconn=1,
-                        maxconn=8,
+                        minconn=minconn,
+                        maxconn=maxconn,
                         host=pg_conn.host,
                         port=pg_conn.port or 5432,
                         database=pg_conn.schema or pg_conn.login,
