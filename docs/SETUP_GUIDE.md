@@ -5,48 +5,28 @@ This guide documents the steps to set up and run the local development environme
 ## Prerequisites
 
 - Docker Desktop (4GB+ RAM recommended)
-- [Astronomer CLI](https://www.astronomer.io/docs/astro/cli/install-cli)
 
 ## Quick Start
 
-### 1. Start PostgreSQL Source and Target Databases
+### 1. Start All Services
 
 ```bash
 docker-compose up -d
 ```
 
-This starts two PostgreSQL containers:
+This starts all containers:
 - **postgres-source**: Source database on port 5434 (database: `source_db`)
 - **postgres-target**: Target database on port 5435 (database: `target_db`)
+- **airflow-postgres**: Airflow metadata database
+- **airflow-webserver**: http://localhost:8080 (user: `admin`, password: `admin`)
+- **airflow-scheduler**: Runs DAGs
+- **airflow-triggerer**: For deferrable operators
 
-Both use credentials: `postgres` / `PostgresPassword123`
+Both source and target databases use credentials: `postgres` / `PostgresPassword123`
 
-### 2. Start Airflow
+### 2. Load Test Data in Source Database
 
-```bash
-astro dev start
-```
-
-This starts 5 Airflow containers:
-- API Server (Webserver): http://localhost:8080
-- Scheduler
-- DAG Processor
-- Triggerer
-- PostgreSQL (Airflow metadata)
-
-Connections are auto-configured via `.env` file (environment variables).
-
-### 3. Connect PostgreSQL Databases to Airflow Network
-
-```bash
-./scripts/connect-databases.sh
-```
-
-This script automatically finds the Airflow network and connects both database containers.
-
-### 4. Load Test Data in Source Database
-
-You have two options for test data:
+You have three options for test data:
 
 #### Option A: StackOverflow 2013 Dataset (Recommended for large-scale testing)
 
@@ -249,7 +229,7 @@ ON CONFLICT DO NOTHING;
 "
 ```
 
-### 5. Run the Migration
+### 3. Run the Migration
 
 **Option A: Using pg_dump (Recommended for quick setup)**
 
@@ -261,11 +241,10 @@ docker exec postgres-source pg_dump -U postgres -d source_db --schema=public --n
 **Option B: Using Airflow DAG**
 
 ```bash
-SCHEDULER=$(docker ps --format '{{.Names}}' | grep scheduler)
-docker exec $SCHEDULER airflow dags trigger postgres_to_postgres_migration
+docker exec airflow-scheduler airflow dags trigger postgres_to_postgres_migration
 ```
 
-### 6. Verify Migration
+### 4. Verify Migration
 
 ```bash
 docker exec postgres-target psql -U postgres -d target_db -c "
@@ -290,7 +269,7 @@ Expected output:
 
 | Service | URL/Port | Credentials |
 |---------|----------|-------------|
-| Airflow UI | http://localhost:8080 | No auth required locally |
+| Airflow UI | http://localhost:8080 | admin / admin |
 | PostgreSQL Source | localhost:5434 | postgres / PostgresPassword123 |
 | PostgreSQL Target | localhost:5435 | postgres / PostgresPassword123 |
 
@@ -298,20 +277,22 @@ Expected output:
 
 ```bash
 # Stop all services
-astro dev stop
 docker-compose down
 
-# View Airflow logs
-astro dev logs -f
+# View logs
+docker-compose logs -f
 
-# Restart Airflow
-astro dev restart
+# Restart services
+docker-compose restart
 
-# Parse/validate DAGs
-astro dev parse
+# Rebuild after code changes
+docker-compose down && docker-compose build && docker-compose up -d
+
+# Check for DAG import errors
+docker exec airflow-scheduler airflow dags list-import-errors
 
 # Run tests
-astro dev pytest tests/
+docker exec airflow-scheduler pytest tests/
 
 # Connect to source database
 docker exec -it postgres-source psql -U postgres -d source_db
@@ -324,46 +305,43 @@ docker exec -it postgres-target psql -U postgres -d target_db
 
 ### Connection Refused Errors
 
-If Airflow tasks fail with connection errors, ensure the PostgreSQL containers are connected to the Airflow network:
+All services are on the same Docker network, so connection issues should be rare. If tasks fail with connection errors:
+
+1. Check all containers are running:
+```bash
+docker-compose ps
+```
+
+2. Restart the affected service:
+```bash
+docker-compose restart airflow-scheduler
+```
+
+### Containers Not Starting
+
+Check for port conflicts:
+```bash
+lsof -i :8080  # Airflow webserver
+lsof -i :5434  # PostgreSQL source
+lsof -i :5435  # PostgreSQL target
+```
+
+Stop conflicting services or change ports in docker-compose.yml.
+
+### DAG Not Visible
+
+Wait for the scheduler to pick up new DAGs (up to 30 seconds), or check for import errors:
 
 ```bash
-./scripts/connect-databases.sh
+docker exec airflow-scheduler airflow dags list-import-errors
 ```
 
-### Connections Not Found
+### Rebuild After Code Changes
 
-Connections are auto-configured via `.env` file (environment variables). If they're missing, restart Airflow:
+If you modify the Dockerfile or requirements.txt:
 
 ```bash
-astro dev restart
+docker-compose down
+docker-compose build
+docker-compose up -d
 ```
-
-### Container Name Mismatch
-
-The Astro project name is set in `.astro/config.yaml`. If container names don't match expected patterns, check this file:
-
-```yaml
-project:
-    name: postgres-to-postgres-pipeline
-```
-
-### DAG Task Failures
-
-The `create_target_tables` task may fail due to Airflow 3 compatibility issues with parameter passing. If this happens, use the pg_dump approach (Option A) for migration.
-
-## Code Fixes Applied
-
-The following fixes were needed for Airflow 3 compatibility:
-
-1. **Parameter tuple syntax** in `include/mssql_pg_migration/schema_extractor.py`:
-   - Changed `parameters=[value]` to `parameters=(value,)` for all PostgresHook queries
-
-2. **SQL LIKE escape** in `include/mssql_pg_migration/schema_extractor.py`:
-   - Changed `LIKE 'nextval%'` to `LIKE 'nextval%%'` to escape the percent sign
-
-3. **Project name** in `.astro/config.yaml`:
-   - Updated from `mssql-to-postgres-pipeline` to `postgres-to-postgres-pipeline`
-
-4. **Airflow connections** via `.env` file:
-   - Using `AIRFLOW_CONN_*` environment variables for reliable connection configuration
-   - Note: `airflow_settings.yaml` is unreliable with Airflow 3 / Astro CLI

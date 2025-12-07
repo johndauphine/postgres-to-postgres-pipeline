@@ -1,11 +1,68 @@
-# Docker Compose for PostgreSQL source and target databases
+# Docker Compose for PostgreSQL to PostgreSQL Migration Pipeline
+# Based on official Apache Airflow 3.0.2 docker-compose
+# Uses LocalExecutor (no Redis/Celery) for simplicity
 #
-# Container names match Airflow connection hostnames for consistency.
-# After starting, connect to Airflow network with:
-#   ./scripts/connect-databases.sh
+# Usage:
+#   docker-compose up -d        # Start all services
+#   docker-compose down         # Stop all services
+#   docker-compose logs -f      # View logs
+
+x-airflow-common:
+  &airflow-common
+  build: .
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__INTERNAL_API_SECRET_KEY: 'YXNkZmFzZGZhc2RmYXNkZjEyMzQ1Njc4OTA='
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'false'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    # Parallelism settings
+    AIRFLOW__CORE__PARALLELISM: ${AIRFLOW__CORE__PARALLELISM:-16}
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: ${AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG:-8}
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: ${AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG:-1}
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 10
+    AIRFLOW__SCHEDULER__SCHEDULER_HEARTBEAT_SEC: 5
+    AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE: 10
+    AIRFLOW__DATABASE__SQL_ALCHEMY_MAX_OVERFLOW: 20
+    # Connection environment variables
+    AIRFLOW_CONN_POSTGRES_SOURCE: ${AIRFLOW_CONN_POSTGRES_SOURCE:-postgresql://postgres:PostgresPassword123@postgres-source:5432/source_db}
+    AIRFLOW_CONN_POSTGRES_TARGET: ${AIRFLOW_CONN_POSTGRES_TARGET:-postgresql://postgres:PostgresPassword123@postgres-target:5432/target_db}
+    # Test connections for partition testing
+    AIRFLOW_CONN_POSTGRES_PARTITION_SOURCE: ${AIRFLOW_CONN_POSTGRES_PARTITION_SOURCE:-postgresql://postgres:PostgresPassword123@postgres-source:5432/partition_test_source}
+    AIRFLOW_CONN_POSTGRES_PARTITION_TARGET: ${AIRFLOW_CONN_POSTGRES_PARTITION_TARGET:-postgresql://postgres:PostgresPassword123@postgres-target:5432/partition_test_target}
+    # Variables
+    AIRFLOW_VAR_TARGET_SCHEMA: ${AIRFLOW_VAR_TARGET_SCHEMA:-public}
+    # Python path for include modules
+    PYTHONPATH: /opt/airflow
+    # Use shared config file for consistent internal_api_secret_key
+    AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./include:/opt/airflow/include
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./config:/opt/airflow/config
+    - ./tests:/opt/airflow/tests
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    airflow-postgres:
+      condition: service_healthy
+    postgres-source:
+      condition: service_healthy
+    postgres-target:
+      condition: service_healthy
 
 services:
-  # PostgreSQL 16 for source database
+  # =============================================================================
+  # SOURCE AND TARGET DATABASES
+  # =============================================================================
+
   postgres-source:
     image: postgres:16-alpine
     container_name: postgres-source
@@ -21,7 +78,6 @@ services:
     mem_limit: 4g
     mem_reservation: 2g
     cpus: 6
-    # Performance tuning for high parallelism reads
     command:
       - "postgres"
       - "-c"
@@ -39,7 +95,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # PostgreSQL 16 for target database
   postgres-target:
     image: postgres:16-alpine
     container_name: postgres-target
@@ -55,7 +110,6 @@ services:
     mem_limit: 4g
     mem_reservation: 2g
     cpus: 6
-    # Performance tuning for high parallelism bulk loading
     command:
       - "postgres"
       - "-c"
@@ -81,8 +135,131 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # =============================================================================
+  # AIRFLOW SERVICES
+  # =============================================================================
+
+  airflow-postgres:
+    image: postgres:16-alpine
+    container_name: airflow-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  airflow-apiserver:
+    <<: *airflow-common
+    container_name: airflow-apiserver
+    command: api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-apiserver:
+        condition: service_healthy
+    restart: unless-stopped
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    container_name: airflow-dag-processor
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  airflow-triggerer:
+    <<: *airflow-common
+    container_name: airflow-triggerer
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/{logs,dags,plugins,config}
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/{logs,dags,plugins,config}
+        airflow db migrate
+        # Update config file with the correct internal API secret key to match env var
+        if [ -f /opt/airflow/airflow.cfg ]; then
+          sed -i "s/^internal_api_secret_key = .*/internal_api_secret_key = $${AIRFLOW__CORE__INTERNAL_API_SECRET_KEY}/" /opt/airflow/airflow.cfg
+        fi
+        airflow users create \
+          --username $${_AIRFLOW_WWW_USER_USERNAME:-admin} \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com \
+          --password $${_AIRFLOW_WWW_USER_PASSWORD:-admin} || true
+        airflow version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-admin}
+    user: "0:0"
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+
 volumes:
   postgres_source_data:
     driver: local
   postgres_target_data:
+    driver: local
+  airflow_postgres_data:
     driver: local

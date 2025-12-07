@@ -1,6 +1,6 @@
 # PostgreSQL to PostgreSQL Migration Pipeline
 
-An Apache Airflow pipeline for automated, full-refresh migrations from PostgreSQL source to PostgreSQL target. Built with the Astronomer framework for reliable orchestration and easy deployment.
+An Apache Airflow pipeline for automated, full-refresh migrations from PostgreSQL source to PostgreSQL target. Uses vanilla Apache Airflow with Docker Compose for reliable orchestration.
 
 ## Features
 
@@ -15,9 +15,8 @@ An Apache Airflow pipeline for automated, full-refresh migrations from PostgreSQ
 ### Prerequisites
 
 - Docker Desktop (4GB+ RAM recommended)
-- [Astronomer CLI](https://www.astronomer.io/docs/astro/cli/install-cli)
 
-### 1. Start Databases
+### 1. Start All Services
 
 ```bash
 docker-compose up -d
@@ -26,24 +25,16 @@ docker-compose up -d
 This starts:
 - **postgres-source**: Source database on port 5434 (database: `source_db`)
 - **postgres-target**: Target database on port 5435 (database: `target_db`)
+- **airflow-postgres**: Airflow metadata database
+- **airflow-webserver**: Airflow UI on port 8080
+- **airflow-scheduler**: Airflow scheduler
+- **airflow-triggerer**: Airflow triggerer for deferrable operators
 
-### 2. Start Airflow
-
-```bash
-astro dev start
-```
-
-Access the Airflow UI at http://localhost:8080
+Access the Airflow UI at http://localhost:8080 (user: `admin`, password: `admin`)
 
 Connections are auto-configured via `.env` file (environment variables).
 
-### 3. Connect Databases to Airflow Network
-
-```bash
-./scripts/connect-databases.sh
-```
-
-### 4. Run Migration
+### 2. Run Migration
 
 **Option A: Using pg_dump (recommended for simple migrations)**
 
@@ -55,8 +46,7 @@ docker exec postgres-source pg_dump -U postgres -d source_db --schema=public --n
 **Option B: Using Airflow DAG (recommended for large datasets)**
 
 ```bash
-SCHEDULER=$(docker ps --format '{{.Names}}' | grep scheduler)
-docker exec $SCHEDULER airflow dags trigger postgres_to_postgres_migration
+docker exec airflow-scheduler airflow dags trigger postgres_to_postgres_migration
 ```
 
 See [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md) for detailed setup instructions including test data creation.
@@ -95,7 +85,7 @@ A standalone `validate_migration_env` DAG handles validation separately to avoid
 
 | Service | URL/Port | Credentials |
 |---------|----------|-------------|
-| Airflow UI | http://localhost:8080 | No auth required locally |
+| Airflow UI | http://localhost:8080 | admin / admin |
 | PostgreSQL Source | localhost:5434 | postgres / PostgresPassword123 |
 | PostgreSQL Target | localhost:5435 | postgres / PostgresPassword123 |
 
@@ -118,10 +108,11 @@ postgres-to-postgres-pipeline/
 │       └── test_dag_example.py            # DAG validation tests
 ├── docs/
 │   └── SETUP_GUIDE.md                     # Detailed setup instructions
-├── docker-compose.yml                     # Source and target PostgreSQL containers
-├── Dockerfile                             # Astronomer Runtime image
+├── plugins/                               # Airflow plugins directory
+├── docker-compose.yml                     # All services (databases + Airflow)
+├── Dockerfile                             # Apache Airflow image
 ├── requirements.txt                       # Python dependencies
-└── airflow_settings.yaml                  # Local connections/variables
+└── .env                                   # Environment variables
 ```
 
 ## Configuration Parameters
@@ -148,7 +139,7 @@ Set `drop_existing_tables: true` when:
 
 **Example: Trigger with clean target**
 ```bash
-astro dev run dags trigger postgres_to_postgres_migration \
+docker exec airflow-scheduler airflow dags trigger postgres_to_postgres_migration \
   --conf '{"drop_existing_tables": true}'
 ```
 
@@ -157,31 +148,49 @@ astro dev run dags trigger postgres_to_postgres_migration \
 ### Validate DAGs
 
 ```bash
-astro dev parse
+docker exec airflow-scheduler airflow dags list-import-errors
 ```
 
 ### Run Tests
 
 ```bash
-astro dev pytest tests/
+docker exec airflow-scheduler pytest tests/
 ```
 
 ### View Logs
 
 ```bash
-astro dev logs -f
+docker-compose logs -f
 ```
 
 ### Stop Services
 
 ```bash
-astro dev stop
 docker-compose down
 ```
 
+### Rebuild After Changes
+
+```bash
+docker-compose down
+docker-compose build
+docker-compose up -d
+```
+
+## Command Reference
+
+| Astronomer (old) | Docker Compose (new) |
+|------------------|---------------------|
+| `astro dev start` | `docker-compose up -d` |
+| `astro dev stop` | `docker-compose down` |
+| `astro dev restart` | `docker-compose restart` |
+| `astro dev logs` | `docker-compose logs -f` |
+| `astro dev parse` | `docker exec airflow-scheduler airflow dags list-import-errors` |
+| `astro dev pytest tests/` | `docker exec airflow-scheduler pytest tests/` |
+
 ## Dependencies
 
-- Astronomer Runtime 3.1
+- Apache Airflow 2.10.4
 - apache-airflow-providers-postgres >= 5.12.0
 - psycopg2-binary
 - pg8000 >= 1.30.0

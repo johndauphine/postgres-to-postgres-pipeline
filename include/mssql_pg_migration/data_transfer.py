@@ -13,6 +13,7 @@ from datetime import datetime, date, time as dt_time
 from decimal import Decimal
 from io import StringIO, TextIOBase
 import contextlib
+import json
 import logging
 import os
 import threading
@@ -416,14 +417,19 @@ class DataTransfer:
         pk_index: int,
         where_clause: Optional[str] = None,
     ) -> Tuple[List[Tuple[Any, ...]], Optional[Any]]:
-        """Read rows using keyset pagination with deterministic ordering."""
+        """Read rows using keyset pagination with deterministic ordering.
+
+        Uses ctid (physical row location) for tie-breaking when pk_column has duplicates.
+        This ensures all rows are read even when the pagination key is not unique.
+        """
 
         quoted_columns = ', '.join([f'"{col}"' for col in columns])
         base_query = f"""
-        SELECT {quoted_columns}
+        SELECT {quoted_columns}, ctid
         FROM {schema_name}.{table_name}
         """
-        order_by = f'ORDER BY "{pk_column}"'
+        # Order by pk_column first, then ctid for deterministic ordering
+        order_by = f'ORDER BY "{pk_column}", ctid'
         limit_clause = f"LIMIT {limit}"
 
         # Build WHERE clause combining filter and pagination
@@ -431,12 +437,14 @@ class DataTransfer:
         if where_clause:
             where_conditions.append(f"({where_clause})")
         if last_key_value is not None:
-            where_conditions.append(f'"{pk_column}" > %s')
+            pk_val, ctid_val = last_key_value
+            # Use tuple comparison for tie-breaking: (pk, ctid) > (last_pk, last_ctid)
+            where_conditions.append(f'("{pk_column}", ctid) > (%s, %s)')
 
         if where_conditions:
             where_part = "WHERE " + " AND ".join(where_conditions)
             query = f"{base_query}\n{where_part}\n{order_by}\n{limit_clause}"
-            params = (last_key_value,) if last_key_value is not None else None
+            params = last_key_value if last_key_value is not None else None
         else:
             query = f"{base_query}\n{order_by}\n{limit_clause}"
             params = None
@@ -452,8 +460,15 @@ class DataTransfer:
                 if not rows:
                     return [], last_key_value
 
-                next_key = rows[-1][pk_index]
-                return rows, next_key
+                # Last row: extract pk value and ctid for next pagination
+                last_row = rows[-1]
+                next_pk = last_row[pk_index]
+                next_ctid = last_row[-1]  # ctid is last column
+
+                # Remove ctid from returned rows (it's only for pagination)
+                cleaned_rows = [row[:-1] for row in rows]
+
+                return cleaned_rows, (next_pk, next_ctid)
         except Exception as e:
             logger.error(f"Error reading chunk after key {last_key_value}: {str(e)}")
             raise
@@ -509,6 +524,9 @@ class DataTransfer:
             return str(value)
         if isinstance(value, bool):
             return 't' if value else 'f'
+        if isinstance(value, (dict, list)):
+            # JSONB/JSON columns: serialize as proper JSON string
+            return json.dumps(value)
         if isinstance(value, (bytes, bytearray, memoryview)):
             try:
                 return bytes(value).decode('utf-8', 'ignore')

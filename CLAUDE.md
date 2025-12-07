@@ -4,43 +4,54 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an Apache Airflow project built using the Astronomer framework for orchestrating data pipelines, specifically designed for ETL processes from PostgreSQL source to PostgreSQL target. The project uses Astronomer Runtime (Docker-based) for local development and deployment.
+This is an Apache Airflow project using vanilla Apache Airflow 2.10.4 with Docker Compose for orchestrating data pipelines. The project is designed for ETL processes from PostgreSQL source to PostgreSQL target.
 
 ## Common Development Commands
 
 ### Starting and Managing Airflow
 
 ```bash
-# Start Airflow locally (spins up 5 Docker containers)
-astro dev start
+# Start all services (databases + Airflow)
+docker-compose up -d
 
-# Stop all Airflow containers
-astro dev stop
+# Stop all services
+docker-compose down
 
-# Restart Airflow containers
-astro dev restart
+# Restart services
+docker-compose restart
 
-# View container logs
-astro dev logs
+# View logs
+docker-compose logs -f
 
-# Parse and validate DAGs without starting Airflow
-astro dev parse
-
-# Run pytest tests
-astro dev pytest tests/
+# Rebuild after code changes
+docker-compose down && docker-compose build && docker-compose up -d
 ```
 
 ### Running Tests
 
 ```bash
-# Run all DAG validation tests
-astro dev pytest tests/dags/test_dag_example.py
+# Check for DAG import errors
+docker exec airflow-scheduler airflow dags list-import-errors
 
-# Run specific test
-astro dev pytest tests/dags/test_dag_example.py::test_file_imports
+# Run pytest tests
+docker exec airflow-scheduler pytest tests/
 
-# Run DAG integrity check (validates imports)
-astro dev parse
+# List all DAGs
+docker exec airflow-scheduler airflow dags list
+```
+
+### Triggering DAGs
+
+```bash
+# Trigger migration DAG
+docker exec airflow-scheduler airflow dags trigger postgres_to_postgres_migration
+
+# Trigger with configuration
+docker exec airflow-scheduler airflow dags trigger postgres_to_postgres_migration \
+  --conf '{"drop_existing_tables": true}'
+
+# Check DAG run status
+docker exec airflow-scheduler airflow dags list-runs -d postgres_to_postgres_migration
 ```
 
 ## Architecture and Code Structure
@@ -57,7 +68,7 @@ from pendulum import datetime
 @dag(
     start_date=datetime(2025, 4, 22),
     schedule="@daily",
-    default_args={"owner": "Astro", "retries": 3},
+    default_args={"owner": "data-team", "retries": 3},
     tags=["example"],  # Required by tests
 )
 def my_dag():
@@ -97,25 +108,31 @@ All DAGs must meet these criteria (enforced by tests/dags/test_dag_example.py):
 
 ### Docker and Deployment
 
-The project uses Astronomer Runtime v3.1-5 (Dockerfile). When modifying dependencies:
+The project uses Apache Airflow 2.10.4 (Dockerfile). When modifying dependencies:
 
 1. **Python packages**: Add to `requirements.txt`
-2. **OS packages**: Add to `packages.txt`
-3. **Environment variables**: Use `.env` file (local only)
-4. **Connections/Variables**: Configure in `.env` file using `AIRFLOW_CONN_*` and `AIRFLOW_VAR_*` environment variables
+2. **Environment variables**: Use `.env` file
+3. **Connections/Variables**: Configure in `.env` file using `AIRFLOW_CONN_*` and `AIRFLOW_VAR_*` environment variables
 
 ### Local Development Environment
 
-When `astro dev start` is running:
-- Airflow UI: http://localhost:8080/ (no auth required locally)
-- PostgreSQL (Airflow metadata): localhost:5432/postgres (user: postgres, pass: postgres)
+When `docker-compose up -d` is running:
+- Airflow UI: http://localhost:8080/ (user: admin, password: admin)
 - PostgreSQL Source: localhost:5434/source_db (user: postgres, pass: PostgresPassword123)
 - PostgreSQL Target: localhost:5435/target_db (user: postgres, pass: PostgresPassword123)
-- Five containers run: postgres, scheduler, dag-processor, webserver, triggerer
+- Airflow metadata DB: internal (airflow-postgres container)
+
+Containers running:
+- postgres-source
+- postgres-target
+- airflow-postgres
+- airflow-webserver
+- airflow-scheduler
+- airflow-triggerer
 
 ### Connection and Variable Management
 
-For local development, define connections and variables in `.env` file using environment variables:
+Connections and variables are defined in `.env` file using environment variables:
 ```bash
 # Airflow connections as environment variables
 # Format: AIRFLOW_CONN_{CONN_ID}='{conn_type}://{login}:{password}@{host}:{port}/{schema}'
@@ -126,8 +143,6 @@ AIRFLOW_CONN_POSTGRES_TARGET='postgresql://postgres:PostgresPassword123@postgres
 # Airflow variables
 AIRFLOW_VAR_TARGET_SCHEMA='public'
 ```
-
-Note: The `airflow_settings.yaml` approach has known issues with Airflow 3 / Astro CLI. Environment variables are more reliable.
 
 ### DAG File Structure
 
@@ -180,4 +195,4 @@ pipeline_name()
 
 3. **XCom Usage**: For passing data between tasks, use return values or context["ti"].xcom_push()
 
-4. **Testing DAGs**: Always validate new DAGs with `astro dev parse` before committing
+4. **Testing DAGs**: Always validate new DAGs with `docker exec airflow-scheduler airflow dags list-import-errors` before committing
