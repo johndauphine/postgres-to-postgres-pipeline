@@ -81,31 +81,31 @@ def quote_sql_literal(value) -> str:
     },
     params={
         "source_conn_id": Param(
-            default="postgres_source",
+            default=os.environ.get('SOURCE_CONN_ID', 'postgres_source'),
             type="string",
-            description="PostgreSQL source connection ID"
+            description="PostgreSQL source connection ID (env: SOURCE_CONN_ID)"
         ),
         "target_conn_id": Param(
-            default="postgres_target",
+            default=os.environ.get('TARGET_CONN_ID', 'postgres_target'),
             type="string",
-            description="PostgreSQL target connection ID"
+            description="PostgreSQL target connection ID (env: TARGET_CONN_ID)"
         ),
         "source_schema": Param(
-            default="public",
+            default=os.environ.get('SOURCE_SCHEMA', 'public'),
             type="string",
-            description="Source schema in PostgreSQL source"
+            description="Source schema in PostgreSQL source (env: SOURCE_SCHEMA)"
         ),
         "target_schema": Param(
-            default="public",
+            default=os.environ.get('TARGET_SCHEMA', 'public'),
             type="string",
-            description="Target schema in PostgreSQL target"
+            description="Target schema in PostgreSQL target (env: TARGET_SCHEMA)"
         ),
         "chunk_size": Param(
-            default=100000,
+            default=int(os.environ.get('CHUNK_SIZE', '100000')),
             type="integer",
             minimum=100,
             maximum=500000,
-            description="Number of rows to transfer per batch"
+            description="Number of rows to transfer per batch (env: CHUNK_SIZE)"
         ),
         "exclude_tables": Param(
             default=[],
@@ -123,10 +123,10 @@ def quote_sql_literal(value) -> str:
             description="Drop and recreate existing tables instead of truncating. Use when source schema has changed."
         ),
         "partition_threshold": Param(
-            default=1_000_000,
+            default=int(os.environ.get('PARTITION_THRESHOLD', '1000000')),
             type="integer",
             minimum=100_000,
-            description="Row count threshold for automatic table partitioning"
+            description="Row count threshold for automatic table partitioning (env: PARTITION_THRESHOLD)"
         ),
         "max_partitions": Param(
             default=int(os.environ.get('MAX_PARTITIONS', '8')),

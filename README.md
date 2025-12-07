@@ -115,18 +115,53 @@ postgres-to-postgres-pipeline/
 └── .env                                   # Environment variables
 ```
 
-## Configuration Parameters
+## Configuration
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `source_conn_id` | `postgres_source` | Airflow connection ID for source PostgreSQL |
-| `target_conn_id` | `postgres_target` | Airflow connection ID for target PostgreSQL |
-| `source_schema` | `public` | Schema to migrate from source |
-| `target_schema` | `public` | Target schema in destination |
-| `chunk_size` | `100000` | Rows per batch during transfer |
-| `exclude_tables` | `[]` | Table patterns to skip |
-| `use_unlogged_tables` | `true` | Create tables as UNLOGGED for faster bulk inserts |
-| `drop_existing_tables` | `false` | Drop and recreate existing tables instead of truncating |
+All configuration is centralized in the `.env` file. Copy `.env.example` to `.env` and modify as needed:
+
+```bash
+cp .env.example .env
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| **Database Connections** |||
+| `AIRFLOW_CONN_POSTGRES_SOURCE` | (see .env.example) | Source database connection string |
+| `AIRFLOW_CONN_POSTGRES_TARGET` | (see .env.example) | Target database connection string |
+| **DAG Defaults** |||
+| `SOURCE_CONN_ID` | `postgres_source` | Default source connection ID |
+| `TARGET_CONN_ID` | `postgres_target` | Default target connection ID |
+| `SOURCE_SCHEMA` | `public` | Default source schema |
+| `TARGET_SCHEMA` | `public` | Default target schema |
+| **Data Transfer** |||
+| `CHUNK_SIZE` | `100000` | Rows per batch during transfer |
+| `PARTITION_THRESHOLD` | `1000000` | Row count threshold for table partitioning |
+| `MAX_PARTITIONS` | `8` | Maximum partitions per large table |
+| **Parallelism** |||
+| `AIRFLOW__CORE__PARALLELISM` | `16` | Max concurrent tasks across all DAGs |
+| `AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG` | `8` | Max concurrent tasks per DAG |
+
+After changing `.env`, apply changes with:
+```bash
+docker-compose up -d --force-recreate
+```
+
+### DAG Parameters
+
+These can also be overridden when triggering the DAG:
+
+| Parameter | Description |
+|-----------|-------------|
+| `source_conn_id` | Airflow connection ID for source PostgreSQL |
+| `target_conn_id` | Airflow connection ID for target PostgreSQL |
+| `source_schema` | Schema to migrate from source |
+| `target_schema` | Target schema in destination |
+| `chunk_size` | Rows per batch during transfer |
+| `exclude_tables` | Table patterns to skip |
+| `use_unlogged_tables` | Create tables as UNLOGGED for faster bulk inserts |
+| `drop_existing_tables` | Drop and recreate existing tables instead of truncating |
 
 ### When to Use `drop_existing_tables`
 
