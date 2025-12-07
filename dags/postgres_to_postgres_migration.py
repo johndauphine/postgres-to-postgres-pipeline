@@ -11,7 +11,8 @@ It handles:
 The DAG is designed for data warehouse use cases where only primary keys are needed (no foreign keys).
 """
 
-from airflow.sdk import Asset, dag, task
+from airflow.decorators import dag, task
+from airflow.datasets import Dataset as Asset
 from airflow.models.param import Param
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from pendulum import datetime

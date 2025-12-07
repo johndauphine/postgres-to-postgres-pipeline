@@ -2,12 +2,15 @@
 .env
 .DS_Store
 __pycache__/
-astro
 .venv
 airflow-webserver.pid
 webserver_config.py
 airflow.cfg
 airflow.db
 
+# Airflow logs
+logs/
+
 # Test data (large files)
+data/
 stackoverflow_db/
