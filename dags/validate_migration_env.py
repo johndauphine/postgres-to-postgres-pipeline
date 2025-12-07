@@ -2,24 +2,63 @@
 Migration Validation DAG using Environment Variables
 
 This DAG validates PostgreSQL to PostgreSQL migration by comparing row counts.
-It uses environment variables for connection details to avoid hardcoding.
+It uses the same AIRFLOW_CONN_* connection strings from .env as the migration DAG.
 
-Set these environment variables before running:
-- POSTGRES_SOURCE_HOST, POSTGRES_SOURCE_PORT, POSTGRES_SOURCE_DATABASE, POSTGRES_SOURCE_USERNAME, POSTGRES_SOURCE_PASSWORD
-- POSTGRES_TARGET_HOST, POSTGRES_TARGET_PORT, POSTGRES_TARGET_DATABASE, POSTGRES_TARGET_USERNAME, POSTGRES_TARGET_PASSWORD
-
-Or use the default test values if not set.
+Connection strings are parsed from:
+- AIRFLOW_CONN_POSTGRES_SOURCE (or custom via SOURCE_CONN_ID)
+- AIRFLOW_CONN_POSTGRES_TARGET (or custom via TARGET_CONN_ID)
 """
 
 from airflow.decorators import dag, task
 from airflow.models.param import Param
 from pendulum import datetime
 from datetime import timedelta
+from urllib.parse import urlparse
 import logging
 import os
 import pg8000
 
 logger = logging.getLogger(__name__)
+
+
+def parse_connection_uri(uri: str) -> dict:
+    """Parse an Airflow connection URI into connection parameters."""
+    parsed = urlparse(uri)
+    return {
+        'host': parsed.hostname or 'localhost',
+        'port': parsed.port or 5432,
+        'database': parsed.path.lstrip('/') if parsed.path else 'postgres',
+        'user': parsed.username or 'postgres',
+        'password': parsed.password or '',
+    }
+
+
+def get_connection_config(conn_id: str) -> dict:
+    """Get connection config from environment variable."""
+    # Convert conn_id to env var name: postgres_source -> AIRFLOW_CONN_POSTGRES_SOURCE
+    env_var = f"AIRFLOW_CONN_{conn_id.upper()}"
+    uri = os.environ.get(env_var)
+
+    if uri:
+        return parse_connection_uri(uri)
+
+    # Fallback defaults for testing
+    if 'source' in conn_id.lower():
+        return {
+            'host': 'postgres-source',
+            'port': 5432,
+            'database': 'source_db',
+            'user': 'postgres',
+            'password': 'PostgresPassword123',
+        }
+    else:
+        return {
+            'host': 'postgres-target',
+            'port': 5432,
+            'database': 'target_db',
+            'user': 'postgres',
+            'password': 'PostgresPassword123',
+        }
 
 
 @dag(
@@ -34,8 +73,26 @@ logger = logging.getLogger(__name__)
         "retries": 0,
     },
     params={
-        "source_schema": Param(default="public", type="string"),
-        "target_schema": Param(default="public", type="string"),
+        "source_conn_id": Param(
+            default=os.environ.get('SOURCE_CONN_ID', 'postgres_source'),
+            type="string",
+            description="Source connection ID (env: SOURCE_CONN_ID)"
+        ),
+        "target_conn_id": Param(
+            default=os.environ.get('TARGET_CONN_ID', 'postgres_target'),
+            type="string",
+            description="Target connection ID (env: TARGET_CONN_ID)"
+        ),
+        "source_schema": Param(
+            default=os.environ.get('SOURCE_SCHEMA', 'public'),
+            type="string",
+            description="Source schema (env: SOURCE_SCHEMA)"
+        ),
+        "target_schema": Param(
+            default=os.environ.get('TARGET_SCHEMA', 'public'),
+            type="string",
+            description="Target schema (env: TARGET_SCHEMA)"
+        ),
         "exclude_tables": Param(
             default=[],
             type="array",
@@ -52,38 +109,28 @@ def validate_migration_env():
     @task
     def validate_tables(**context) -> str:
         """
-        Validate all tables using environment variable connections.
+        Validate all tables using connection IDs from .env.
         """
         params = context["params"]
 
-        # Get connection details from environment with defaults for testing
-        source_config = {
-            'host': os.environ.get('POSTGRES_SOURCE_HOST', 'postgres-source'),
-            'port': int(os.environ.get('POSTGRES_SOURCE_PORT', '5432')),
-            'database': os.environ.get('POSTGRES_SOURCE_DATABASE', 'source_db'),
-            'user': os.environ.get('POSTGRES_SOURCE_USERNAME', 'postgres'),
-            'password': os.environ.get('POSTGRES_SOURCE_PASSWORD', 'PostgresPassword123'),
-        }
+        # Get connection config from AIRFLOW_CONN_* environment variables
+        source_conn_id = params["source_conn_id"]
+        target_conn_id = params["target_conn_id"]
 
-        target_config = {
-            'host': os.environ.get('POSTGRES_TARGET_HOST', 'postgres-target'),
-            'port': int(os.environ.get('POSTGRES_TARGET_PORT', '5432')),
-            'database': os.environ.get('POSTGRES_TARGET_DATABASE', 'target_db'),
-            'user': os.environ.get('POSTGRES_TARGET_USERNAME', 'postgres'),
-            'password': os.environ.get('POSTGRES_TARGET_PASSWORD', 'PostgresPassword123'),
-        }
+        source_config = get_connection_config(source_conn_id)
+        target_config = get_connection_config(target_conn_id)
 
         source_schema = params["source_schema"]
         target_schema = params["target_schema"]
         exclude_tables = params.get("exclude_tables", [])
 
         # Connect to databases
-        logger.info("Connecting to databases...")
+        logger.info(f"Connecting using {source_conn_id} -> {target_conn_id}...")
 
         try:
             source_conn = pg8000.connect(**source_config)
             source_cursor = source_conn.cursor()
-            logger.info(f"✓ Connected to PostgreSQL source: {source_config['host']}")
+            logger.info(f"✓ Connected to source: {source_config['host']}:{source_config['port']}/{source_config['database']}")
         except Exception as e:
             logger.error(f"PostgreSQL source connection failed: {e}")
             return f"PostgreSQL source connection failed: {e}"
@@ -91,7 +138,7 @@ def validate_migration_env():
         try:
             target_conn = pg8000.connect(**target_config)
             target_cursor = target_conn.cursor()
-            logger.info(f"✓ Connected to PostgreSQL target: {target_config['host']}")
+            logger.info(f"✓ Connected to target: {target_config['host']}:{target_config['port']}/{target_config['database']}")
         except Exception as e:
             logger.error(f"PostgreSQL target connection failed: {e}")
             source_conn.close()
