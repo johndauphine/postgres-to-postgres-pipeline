@@ -1,6 +1,18 @@
 # Migration Performance Report
 
-## Latest Run: StackOverflow2013 - 2025-12-07T01:55:07Z (Optimized)
+## Key Finding: Parallelism Tuning is Platform-Dependent
+
+**High parallelism (64 tasks) works well on native environments (Mac ARM64) but causes severe performance degradation on virtualized environments (WSL2/Docker Desktop) due to I/O contention.**
+
+| Platform | Optimal Tasks | Throughput | Notes |
+|----------|---------------|------------|-------|
+| Mac M3 Max (native ARM) | 64 | 531K rows/sec | Native virtualization, minimal overhead |
+| WSL2/Docker Desktop | 8 | ~204K rows/sec | I/O virtualization creates contention |
+| WSL2 with 64 tasks | 64 | ~74K rows/sec | **3x SLOWER** due to I/O bottleneck |
+
+---
+
+## Latest Run: StackOverflow2013 - 2025-12-07T01:55:07Z (Mac M3 Max Optimized)
 
 **Run ID:** `manual__2025-12-07T01:55:06.911700+00:00`
 **Final Status:** Success (validation DAG triggered and passed)
@@ -233,9 +245,63 @@ $scheduler = docker ps --format "{{.Names}}" | Select-String "scheduler"
 docker exec $scheduler airflow dags trigger postgres_to_postgres_migration
 ```
 
-### Why Windows May Be Faster
+### Why Windows May Be Faster for SQL Server
 
 1. **Native x86 SQL Server** - No Rosetta 2 emulation (Mac ARM must emulate x86)
 2. **More CPU cores** - 16 cores vs 14 cores
 3. **WSL2 performance** - Near-native Linux performance for containers
 4. **Native Docker volumes** - Faster disk I/O than Mac's virtualized filesystem
+
+---
+
+## WSL2 Parallelism Investigation (2025-12-07)
+
+### Background
+
+After achieving 531K rows/sec on Mac M3 Max with 64 concurrent tasks, we attempted to replicate these settings on WSL2/Docker Desktop. The result was unexpected.
+
+### Test Results
+
+| Configuration | Concurrent Tasks | Time | Throughput | Result |
+|---------------|------------------|------|------------|--------|
+| WSL2 Baseline | 8 | ~8.8 min | ~204K rows/sec | Optimal for WSL2 |
+| WSL2 High Parallelism | 64 | 24+ min | ~74K rows/sec | **3x SLOWER** |
+| Mac M3 Max | 64 | 3.3 min | 531K rows/sec | Native ARM optimal |
+
+### Root Cause Analysis
+
+**WSL2/Docker Desktop has significant I/O virtualization overhead:**
+
+1. **Filesystem Layer**: WSL2 uses 9P protocol for filesystem access between Windows and Linux, adding latency
+2. **Docker Volume Mounts**: Each read/write crosses multiple abstraction layers
+3. **I/O Contention**: High parallelism (64 tasks) causes all tasks to compete for the same I/O bandwidth
+4. **CPU Context Switching**: More concurrent tasks = more context switches = more overhead
+
+**Mac's Virtualization Framework is more efficient:**
+- Apple's native ARM64 hypervisor has minimal overhead
+- Docker Desktop on Mac uses Apple's Virtualization.framework
+- No translation layer (unlike WSL2's 9P protocol)
+
+### Optimal Settings by Platform
+
+#### Mac M3 Max / Apple Silicon (32GB+ RAM)
+```bash
+AIRFLOW__CORE__PARALLELISM=128
+AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG=64
+MAX_PARTITIONS=12
+PG_POOL_MAXCONN=16
+```
+
+#### WSL2 / Docker Desktop (32GB RAM)
+```bash
+AIRFLOW__CORE__PARALLELISM=16
+AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG=8
+MAX_PARTITIONS=8
+PG_POOL_MAXCONN=8
+```
+
+### Key Takeaway
+
+**More parallelism is not always better.** Platform-specific tuning is essential:
+- Native/bare-metal: Higher parallelism scales well
+- Virtualized (WSL2, VirtualBox, etc.): Lower parallelism reduces I/O contention
