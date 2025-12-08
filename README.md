@@ -153,7 +153,6 @@ cp .env.example .env
 | `SMTP_PASSWORD` | `` | SMTP password |
 | `NOTIFICATION_EMAIL_FROM` | `` | Sender email address |
 | `NOTIFICATION_EMAIL_TO` | `` | Recipient email(s), comma-separated |
-| `NOTIFY_ON_TASK_FAILURE` | `false` | Send notification on individual task failures |
 
 After changing `.env`, apply changes with:
 ```bash
@@ -210,9 +209,8 @@ NOTIFICATION_CHANNELS=slack,email
 ```
 
 Notifications are sent when:
-- **DAG Success**: Migration completed successfully with summary
-- **DAG Failure**: Migration failed after all retries exhausted
-- **Task Failure** (optional): Individual task failures (set `NOTIFY_ON_TASK_FAILURE=true`)
+- **DAG Success**: Migration completed successfully (includes tables migrated, row counts, throughput)
+- **DAG Failure**: Migration failed after all retries exhausted (includes error message)
 
 ### When to Use `drop_existing_tables`
 
