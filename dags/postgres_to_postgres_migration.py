@@ -14,6 +14,7 @@ The DAG is designed for data warehouse use cases where only primary keys are nee
 from airflow.decorators import dag, task
 from airflow.sdk.definitions.asset import Asset
 from airflow.models.param import Param
+from airflow.models.xcom_arg import XCOM_RETURN_KEY
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from pendulum import datetime
 from datetime import timedelta
@@ -600,20 +601,33 @@ def postgres_to_postgres_migration():
 
     # Collect all transfer results
     @task(trigger_rule="all_done")
-    def collect_all_results(**context) -> List[Dict[str, Any]]:
+    def collect_all_results(
+        regular_tables: List[Dict[str, Any]],
+        large_table_partitions: List[Dict[str, Any]],
+        **context,
+    ) -> List[Dict[str, Any]]:
         """Collect and aggregate results from all transfer tasks.
 
         Fixed: Improved XCom retrieval with proper error logging for Airflow 3.0.2
         dynamic task mapping compatibility.
         """
         ti = context['ti']
-        dag_run = context['dag_run']
         all_results = []
+
+        def _pull_mapped_xcoms(task_id: str, total: int) -> List[Any]:
+            """Fetch mapped XCom return values ordered by map index."""
+            if total <= 0:
+                logger.info(f"No mapped instances found for {task_id}; skipping pull.")
+                return []
+
+            map_indexes = list(range(total))
+            logger.info(f"{task_id} map indexes detected: {map_indexes}")
+            return ti.xcom_pull(task_ids=task_id, map_indexes=map_indexes, key=XCOM_RETURN_KEY)
 
         # Collect results from regular table transfers
         logger.info("Collecting results from transfer_table_data tasks...")
         try:
-            regular = ti.xcom_pull(task_ids='transfer_table_data', map_indexes=None)
+            regular = _pull_mapped_xcoms('transfer_table_data', len(regular_tables or []))
             logger.info(f"transfer_table_data XCom pull returned: type={type(regular)}, value={regular}")
             if regular:
                 if isinstance(regular, list):
@@ -630,7 +644,7 @@ def postgres_to_postgres_migration():
         # Collect results from partition transfers
         logger.info("Collecting results from transfer_partition tasks...")
         try:
-            partitions = ti.xcom_pull(task_ids='transfer_partition', map_indexes=None)
+            partitions = _pull_mapped_xcoms('transfer_partition', len(large_table_partitions or []))
             logger.info(f"transfer_partition XCom pull returned: type={type(partitions)}, value={partitions}")
             if partitions:
                 if not isinstance(partitions, list):
@@ -656,7 +670,7 @@ def postgres_to_postgres_migration():
         logger.info(f"Collected results for {len(all_results)} tables: {[r.get('table_name') for r in all_results]}")
         return all_results
 
-    transfer_results = collect_all_results()
+    transfer_results = collect_all_results(regular_tables, large_table_partitions)
     [regular_transfer_results, partition_transfer_results] >> transfer_results
 
     # Post-transfer tasks

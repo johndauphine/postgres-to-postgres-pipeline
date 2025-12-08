@@ -253,8 +253,13 @@ class DataTransfer:
             logger.error(error_msg)
             errors.append(error_msg)
 
-        # Get final row count in target
-        target_row_count = self._get_row_count(target_schema, target_table, is_source=False)
+        # Get final row count in target (match partition filter when provided)
+        target_row_count = self._get_row_count(
+            target_schema,
+            target_table,
+            is_source=False,
+            where_clause=where_clause,
+        )
 
         elapsed_time = time.time() - start_time
         avg_rows_per_second = rows_transferred / elapsed_time if elapsed_time > 0 else 0
@@ -295,7 +300,7 @@ class DataTransfer:
             schema_name: Schema name
             table_name: Table name
             is_source: Whether this is the source or target PostgreSQL
-            where_clause: Optional WHERE clause for filtering (only for source)
+            where_clause: Optional WHERE clause for filtering (applied to source or target)
 
         Returns:
             Row count
