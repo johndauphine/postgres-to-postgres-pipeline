@@ -1,7 +1,7 @@
 """
 PostgreSQL DDL Generation Module
 
-This module generates PostgreSQL DDL statements from SQL Server schema metadata,
+This module generates PostgreSQL DDL statements from schema metadata,
 handling table creation, constraints, and indexes.
 """
 
@@ -36,7 +36,7 @@ class DDLGenerator:
         Generate CREATE TABLE statement for PostgreSQL.
 
         Args:
-            table_schema: Table schema information from SQL Server
+            table_schema: Table schema information from source database
             target_schema: Target PostgreSQL schema name
             include_constraints: Whether to include constraints in the DDL
             unlogged: Whether to create table as UNLOGGED (faster bulk loads, no WAL)
@@ -191,7 +191,7 @@ class DDLGenerator:
             constraint_name = check['constraint_name']
             definition = check['definition']
 
-            # Try to convert SQL Server check constraint syntax to PostgreSQL
+            # Convert check constraint syntax to PostgreSQL
             # This is a simplified conversion - complex constraints may need manual review
             pg_definition = self._convert_check_constraint(definition)
 
@@ -369,7 +369,6 @@ class DDLGenerator:
 
         # Add NOT NULL constraint
         # Skip NOT NULL for TEXT columns as source data may have integrity issues
-        # (e.g., SQL Server nvarchar(max) columns with NULL values despite NOT NULL constraint)
         if not column.get('is_nullable', True) and column['data_type'].upper() != 'TEXT':
             parts.append('NOT NULL')
 
@@ -411,18 +410,18 @@ class DDLGenerator:
             return f'"{identifier}"'
         return identifier
 
-    def _convert_check_constraint(self, sql_server_definition: str) -> Optional[str]:
+    def _convert_check_constraint(self, source_definition: str) -> Optional[str]:
         """
-        Convert SQL Server check constraint to PostgreSQL syntax.
+        Convert check constraint to PostgreSQL syntax.
 
         Args:
-            sql_server_definition: SQL Server check constraint definition
+            source_definition: Source check constraint definition
 
         Returns:
             PostgreSQL check constraint definition or None if cannot convert
         """
         # Remove outer parentheses if present
-        definition = sql_server_definition.strip()
+        definition = source_definition.strip()
         if definition.startswith('(') and definition.endswith(')'):
             definition = definition[1:-1].strip()
 

@@ -24,7 +24,7 @@ import os
 import re
 
 # Import our custom migration modules
-from include.mssql_pg_migration import (
+from include.pg_migration import (
     schema_extractor,
     ddl_generator,
     data_transfer,

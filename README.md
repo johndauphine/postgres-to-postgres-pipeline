@@ -97,7 +97,7 @@ postgres-to-postgres-pipeline/
 │   ├── postgres_to_postgres_migration.py  # Main migration DAG
 │   └── validate_migration_env.py          # Standalone validation DAG
 ├── include/
-│   └── mssql_pg_migration/
+│   └── pg_migration/
 │       ├── schema_extractor.py            # PostgreSQL schema discovery
 │       ├── type_mapping.py                # Data type mapping (identity for PG-to-PG)
 │       ├── ddl_generator.py               # PostgreSQL DDL generation

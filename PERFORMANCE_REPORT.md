@@ -114,18 +114,6 @@
 | Throughput | 355K rows/sec | 531K rows/sec | **50% higher** |
 | Max Concurrent Tasks | 8 | 64 | 8x |
 
-### PostgreSQL vs MSSQL Source Comparison
-
-| Pipeline | Source | Rows | Time | Throughput | Notes |
-|----------|--------|------|------|------------|-------|
-| PG→PG (native ARM) | PostgreSQL | 106M | 200.6s | 531K/sec | Native ARM, no emulation |
-| MSSQL→PG (Rosetta) | SQL Server | 106M | 318s | 321K/sec | x86 emulation overhead |
-
-**Key Finding:** Native PostgreSQL-to-PostgreSQL is 66% faster than MSSQL-to-PostgreSQL due to:
-1. No Rosetta 2 x86 emulation overhead
-2. Both databases run native ARM64
-3. Same wire protocol (no translation needed)
-
 ---
 
 ## Historical Run: StackOverflow2013 - 2025-12-07T01:45:26Z (Baseline)
@@ -195,7 +183,6 @@ This was the baseline run with `max_active_tasks=8`, causing partition tasks to 
 | Pipeline | Mac (M3 Max) | Windows (16-core) | Notes |
 |----------|--------------|-------------------|-------|
 | **PG→PG** | 531K rows/sec | ~600K+ rows/sec | Native x86 on Windows |
-| **MSSQL→PG** | 321K rows/sec | ~500K+ rows/sec | No Rosetta overhead on Windows |
 
 ### Windows Setup
 
@@ -244,13 +231,6 @@ docker network connect $network postgres-target
 $scheduler = docker ps --format "{{.Names}}" | Select-String "scheduler"
 docker exec $scheduler airflow dags trigger postgres_to_postgres_migration
 ```
-
-### Why Windows May Be Faster for SQL Server
-
-1. **Native x86 SQL Server** - No Rosetta 2 emulation (Mac ARM must emulate x86)
-2. **More CPU cores** - 16 cores vs 14 cores
-3. **WSL2 performance** - Near-native Linux performance for containers
-4. **Native Docker volumes** - Faster disk I/O than Mac's virtualized filesystem
 
 ---
 
