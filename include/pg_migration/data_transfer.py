@@ -21,6 +21,7 @@ import time
 import csv
 import math
 from psycopg2 import pool as pg_pool
+from psycopg2 import sql
 
 logger = logging.getLogger(__name__)
 
@@ -305,16 +306,26 @@ class DataTransfer:
         Returns:
             Row count
         """
-        query = f'SELECT COUNT(*) FROM {schema_name}.{table_name}'
+        # Use sql.Identifier for safe quoting of schema/table names
+        base_query = sql.SQL('SELECT COUNT(*) FROM {}.{}').format(
+            sql.Identifier(schema_name),
+            sql.Identifier(table_name)
+        )
+
         if where_clause:
-            query += f" WHERE {where_clause}"
-
-        if is_source:
-            count = self.source_hook.get_first(query)[0]
+            # where_clause is trusted (comes from our partition logic, not user input)
+            full_query = sql.SQL('{} WHERE {}').format(base_query, sql.SQL(where_clause))
         else:
-            count = self.target_hook.get_first(query)[0]
+            full_query = base_query
 
-        return count or 0
+        # Execute using hook's connection
+        hook = self.source_hook if is_source else self.target_hook
+        with hook.get_conn() as conn:
+            query_str = full_query.as_string(conn)
+            with conn.cursor() as cursor:
+                cursor.execute(query_str)
+                result = cursor.fetchone()
+                return result[0] if result else 0
 
     def _truncate_table(self, schema_name: str, table_name: str) -> None:
         """
@@ -324,8 +335,15 @@ class DataTransfer:
             schema_name: Schema name
             table_name: Table name
         """
-        query = f'TRUNCATE TABLE {schema_name}.{table_name} CASCADE'
-        self.target_hook.run(query)
+        query = sql.SQL('TRUNCATE TABLE {}.{} CASCADE').format(
+            sql.Identifier(schema_name),
+            sql.Identifier(table_name)
+        )
+        with self.target_hook.get_conn() as conn:
+            query_str = query.as_string(conn)
+            with conn.cursor() as cursor:
+                cursor.execute(query_str)
+            conn.commit()
 
     def _get_table_columns(self, schema_name: str, table_name: str) -> List[str]:
         """
@@ -359,7 +377,11 @@ class DataTransfer:
     ) -> str:
         """
         Get the primary key column for keyset pagination.
-        Prefers 'id' column if available, otherwise uses the first column.
+
+        Priority order:
+        1. Actual primary key from database (correct for pagination)
+        2. 'id' column as fallback (common convention)
+        3. First column as last resort
 
         Args:
             schema_name: Schema name
@@ -369,12 +391,7 @@ class DataTransfer:
         Returns:
             Column name to use for keyset pagination
         """
-        # Prefer 'id' column if it exists (case-insensitive)
-        for col in columns:
-            if col.lower() == 'id':
-                return col
-
-        # Try to get actual primary key from database
+        # 1. First try to get actual primary key from database
         query = """
         SELECT a.attname
         FROM pg_catalog.pg_constraint con
@@ -391,7 +408,12 @@ class DataTransfer:
         except Exception:
             pass
 
-        # Fallback to first column
+        # 2. Fall back to 'id' column if it exists (case-insensitive)
+        for col in columns:
+            if col.lower() == 'id':
+                return col
+
+        # 3. Last resort: first column
         return columns[0] if columns else 'id'
 
     def _calculate_optimal_chunk_size(self, row_count: int, requested_chunk: int) -> int:
@@ -428,30 +450,44 @@ class DataTransfer:
         This ensures all rows are read even when the pagination key is not unique.
         """
 
-        quoted_columns = ', '.join([f'"{col}"' for col in columns])
-        base_query = f"""
-        SELECT {quoted_columns}, ctid
-        FROM {schema_name}.{table_name}
-        """
+        # Build column list with proper quoting using psycopg2.sql
+        columns_sql = sql.SQL(', ').join([sql.Identifier(col) for col in columns])
+
+        # Build base SELECT with properly quoted identifiers
+        base_query = sql.SQL('SELECT {columns}, ctid FROM {schema}.{table}').format(
+            columns=columns_sql,
+            schema=sql.Identifier(schema_name),
+            table=sql.Identifier(table_name)
+        )
+
         # Order by pk_column first, then ctid for deterministic ordering
-        order_by = f'ORDER BY "{pk_column}", ctid'
-        limit_clause = f"LIMIT {limit}"
+        order_by = sql.SQL('ORDER BY {pk}, ctid').format(pk=sql.Identifier(pk_column))
+        limit_sql = sql.SQL('LIMIT {}').format(sql.Literal(limit))
 
         # Build WHERE clause combining filter and pagination
         where_conditions = []
         if where_clause:
-            where_conditions.append(f"({where_clause})")
+            # where_clause is trusted (comes from our partition logic)
+            where_conditions.append(sql.SQL('({})').format(sql.SQL(where_clause)))
         if last_key_value is not None:
-            pk_val, ctid_val = last_key_value
             # Use tuple comparison for tie-breaking: (pk, ctid) > (last_pk, last_ctid)
-            where_conditions.append(f'("{pk_column}", ctid) > (%s, %s)')
+            where_conditions.append(sql.SQL('({pk}, ctid) > (%s, %s)').format(pk=sql.Identifier(pk_column)))
 
         if where_conditions:
-            where_part = "WHERE " + " AND ".join(where_conditions)
-            query = f"{base_query}\n{where_part}\n{order_by}\n{limit_clause}"
+            where_part = sql.SQL('WHERE {}').format(sql.SQL(' AND ').join(where_conditions))
+            query = sql.SQL('{base} {where} {order} {limit}').format(
+                base=base_query,
+                where=where_part,
+                order=order_by,
+                limit=limit_sql
+            )
             params = last_key_value if last_key_value is not None else None
         else:
-            query = f"{base_query}\n{order_by}\n{limit_clause}"
+            query = sql.SQL('{base} {order} {limit}').format(
+                base=base_query,
+                order=order_by,
+                limit=limit_sql
+            )
             params = None
 
         try:
@@ -502,22 +538,31 @@ class DataTransfer:
         if not rows:
             return 0
 
-        column_list = ', '.join([f'"{col}"' for col in columns])
-        copy_sql = (
-            f"COPY {schema_name}.{table_name} ({column_list}) "
-            "FROM STDIN WITH (FORMAT CSV, DELIMITER E'\\t', QUOTE '\"', NULL '')"
+        # Build COPY statement with properly quoted identifiers
+        columns_sql = sql.SQL(', ').join([sql.Identifier(col) for col in columns])
+        copy_sql = sql.SQL(
+            'COPY {schema}.{table} ({columns}) '
+            "FROM STDIN WITH (FORMAT CSV, DELIMITER E'\\t', QUOTE '\"', NULL E'\\\\N')"
+        ).format(
+            schema=sql.Identifier(schema_name),
+            table=sql.Identifier(table_name),
+            columns=columns_sql
         )
 
         stream = _CSVRowStream(rows, self._normalize_value)
         with target_conn.cursor() as cursor:
-            cursor.copy_expert(copy_sql, stream)
+            cursor.copy_expert(copy_sql.as_string(target_conn), stream)
 
         return len(rows)
 
     def _normalize_value(self, value: Any) -> Any:
-        """Normalize Python values for COPY consumption."""
+        """Normalize Python values for COPY consumption.
+
+        Uses \\N as the NULL marker (distinct from empty string '') to prevent
+        data loss where empty strings would otherwise become NULL.
+        """
         if value is None:
-            return ''
+            return '\\N'  # Distinct NULL marker, not empty string
 
         if isinstance(value, datetime):
             return value.isoformat(sep=' ')
@@ -536,9 +581,9 @@ class DataTransfer:
             try:
                 return bytes(value).decode('utf-8', 'ignore')
             except Exception:
-                return ''
+                return '\\N'  # NULL for decode failures
         if isinstance(value, float) and not math.isfinite(value):
-            return ''
+            return '\\N'  # NULL for non-finite floats (NaN, Inf)
 
         return value
 
