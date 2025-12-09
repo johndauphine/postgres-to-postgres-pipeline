@@ -29,6 +29,11 @@ from include.pg_migration import (
     ddl_generator,
     data_transfer,
 )
+from include.pg_migration.notifications import (
+    on_task_failure,
+    send_success_notification,
+    capture_exceptions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +77,8 @@ def quote_sql_literal(value) -> str:
     max_active_tasks=64,  # Allow up to 64 concurrent tasks within this DAG
     is_paused_upon_creation=False,
     doc_md=__doc__,
+    # Note: DAG-level callbacks don't work reliably in Airflow 3.0
+    # Success notifications are sent from generate_migration_summary task instead
     default_args={
         "owner": "data-team",
         "retries": 3,
@@ -79,6 +86,7 @@ def quote_sql_literal(value) -> str:
         "retry_exponential_backoff": False,
         "max_retry_delay": timedelta(minutes=30),
         "pool": "default_pool",  # Use default pool for all tasks
+        "on_failure_callback": on_task_failure,
     },
     params={
         "source_conn_id": Param(
@@ -145,6 +153,7 @@ def postgres_to_postgres_migration():
     """
 
     @task(outlets=[Asset("postgres_schema_extracted")])
+    @capture_exceptions
     def extract_source_schema(**context) -> List[Dict[str, Any]]:
         """Extract complete schema information from PostgreSQL source."""
         params = context["params"]
@@ -164,6 +173,7 @@ def postgres_to_postgres_migration():
         return tables
 
     @task
+    @capture_exceptions
     def create_target_schema(schema_name: str, **context) -> str:
         """Create target schema in PostgreSQL if it doesn't exist."""
         params = context["params"]
@@ -176,6 +186,7 @@ def postgres_to_postgres_migration():
         return f"Schema {schema_name} ready"
 
     @task
+    @capture_exceptions
     def create_target_tables(
         tables_schema: List[Dict[str, Any]],
         schema_status: str,
@@ -465,6 +476,7 @@ def postgres_to_postgres_migration():
         return partitions
 
     @task
+    @capture_exceptions
     def transfer_table_data(table_info: Dict[str, Any], **context) -> Dict[str, Any]:
         """Transfer data for a single table from source to target."""
         params = context["params"]
@@ -493,6 +505,7 @@ def postgres_to_postgres_migration():
         return result
 
     @task
+    @capture_exceptions
     def transfer_partition(partition_info: Dict[str, Any], **context) -> Dict[str, Any]:
         """Transfer a partition of a large table in parallel."""
         params = context["params"]
@@ -694,8 +707,40 @@ def postgres_to_postgres_migration():
 
     @task
     def generate_migration_summary(**context):
-        """Generate a summary of the migration."""
+        """Generate a summary of the migration and send notification."""
         logger.info("Migration completed successfully!")
+
+        # Send success notification with migration stats
+        # Since DAG callbacks don't work reliably in Airflow 3.0, send from final task
+        ti = context.get('ti')
+        dag_run = context.get('dag_run')
+
+        # Get migration stats from XCom
+        tables_list = ti.xcom_pull(task_ids='extract_source_schema', key='extracted_tables') or []
+        total_rows = ti.xcom_pull(task_ids='extract_source_schema', key='total_row_count') or 0
+
+        # Calculate duration
+        duration_seconds = 0
+        if dag_run and dag_run.start_date:
+            from datetime import datetime, timezone
+            end_time = datetime.now(timezone.utc)
+            duration_seconds = (end_time - dag_run.start_date).total_seconds()
+
+        stats = {
+            'tables_migrated': len(tables_list),
+            'total_rows': total_rows,
+            'tables_list': tables_list,
+            'rows_per_second': int(total_rows / duration_seconds) if duration_seconds > 0 else 0,
+        }
+
+        send_success_notification(
+            dag_id=dag_run.dag_id if dag_run else 'postgres_to_postgres_migration',
+            run_id=dag_run.run_id if dag_run else 'unknown',
+            start_date=dag_run.start_date if dag_run else None,
+            duration_seconds=duration_seconds,
+            stats=stats,
+        )
+
         return "Migration complete"
 
     final_status = generate_migration_summary()

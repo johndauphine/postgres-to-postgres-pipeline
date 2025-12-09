@@ -102,7 +102,8 @@ postgres-to-postgres-pipeline/
 │       ├── type_mapping.py                # Data type mapping (identity for PG-to-PG)
 │       ├── ddl_generator.py               # PostgreSQL DDL generation
 │       ├── data_transfer.py               # Streaming data transfer
-│       └── validation.py                  # Migration validation
+│       ├── validation.py                  # Migration validation
+│       └── notifications.py               # Slack/email notifications
 ├── tests/
 │   └── dags/
 │       └── test_dag_example.py            # DAG validation tests
@@ -142,6 +143,16 @@ cp .env.example .env
 | **Parallelism** |||
 | `AIRFLOW__CORE__PARALLELISM` | `16` | Max concurrent tasks across all DAGs |
 | `AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG` | `8` | Max concurrent tasks per DAG |
+| **Notifications** |||
+| `NOTIFICATION_ENABLED` | `false` | Enable/disable notifications |
+| `NOTIFICATION_CHANNELS` | `` | Comma-separated: `email`, `slack` |
+| `SLACK_WEBHOOK_URL` | `` | Slack incoming webhook URL |
+| `SMTP_HOST` | `` | SMTP server for email notifications |
+| `SMTP_PORT` | `587` | SMTP port |
+| `SMTP_USER` | `` | SMTP username |
+| `SMTP_PASSWORD` | `` | SMTP password |
+| `NOTIFICATION_EMAIL_FROM` | `` | Sender email address |
+| `NOTIFICATION_EMAIL_TO` | `` | Recipient email(s), comma-separated |
 
 After changing `.env`, apply changes with:
 ```bash
@@ -162,6 +173,44 @@ These can also be overridden when triggering the DAG:
 | `exclude_tables` | Table patterns to skip |
 | `use_unlogged_tables` | Create tables as UNLOGGED for faster bulk inserts |
 | `drop_existing_tables` | Drop and recreate existing tables instead of truncating |
+
+### Notifications
+
+The pipeline supports notifications on DAG success/failure via Slack and/or email.
+
+#### Slack Setup
+
+1. Create a Slack webhook at https://api.slack.com/messaging/webhooks
+2. Configure in `.env`:
+   ```bash
+   NOTIFICATION_ENABLED=true
+   NOTIFICATION_CHANNELS=slack
+   SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+   ```
+
+#### Email Setup
+
+1. Configure SMTP settings in `.env`:
+   ```bash
+   NOTIFICATION_ENABLED=true
+   NOTIFICATION_CHANNELS=email
+   SMTP_HOST=smtp.gmail.com
+   SMTP_PORT=587
+   SMTP_USER=your-email@gmail.com
+   SMTP_PASSWORD=your-app-password
+   NOTIFICATION_EMAIL_FROM=your-email@gmail.com
+   NOTIFICATION_EMAIL_TO=recipient@example.com
+   ```
+
+#### Both Channels
+
+```bash
+NOTIFICATION_CHANNELS=slack,email
+```
+
+Notifications are sent when:
+- **DAG Success**: Migration completed successfully (includes tables migrated, row counts, throughput)
+- **DAG Failure**: Migration failed after all retries exhausted (includes error message)
 
 ### When to Use `drop_existing_tables`
 
