@@ -1,0 +1,5 @@
+# Review Notes
+
+- Null handling in COPY: `include/pg_migration/data_transfer.py:505-521` maps `None` to `''` while COPY declares `NULL ''`, so genuine empty strings become NULL on load. Use a distinct null marker (e.g., `NULL '\N'`) and emit that only for `None` (leave empty strings untouched; same for non-finite floats/bytes fallbacks).
+- Pagination key selection: `include/pg_migration/data_transfer.py:372-395` returns the first `id` column before checking the actual primary key, so tables whose PK is not `id` (or is composite) paginate on a non-unique column, risking skipped/duplicated rows. Query the PK first; only fall back to `id`/first column if none is defined.
+- Identifier quoting and SQL safety: `include/pg_migration/data_transfer.py:308-328,431-455` interpolate schema/table names directly into SQL/COPY without quoting. Mixed-case or reserved identifiers will break, and user-supplied values could be injected. Build statements with `psycopg2.sql.Identifier` (or at minimum double-quote schema and table) and keep WHERE clauses parameterized.
