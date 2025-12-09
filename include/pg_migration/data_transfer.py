@@ -202,13 +202,20 @@ class DataTransfer:
         chunks_processed = 0
         errors = []
 
-        pk_column = self._get_primary_key_column(source_schema, source_table, columns)
-        logger.info(f"Using '{pk_column}' for keyset pagination")
-        pk_index = columns.index(pk_column) if pk_column in columns else 0
+        pk_columns = self._get_primary_key_columns(source_schema, source_table, columns)
+        if pk_columns:
+            logger.info(f"Using PK columns {pk_columns} for keyset pagination")
+        else:
+            logger.warning(
+                f"No primary key found for {source_schema}.{source_table}. "
+                "Using ctid-only pagination (slower for large tables)."
+            )
+        # Get indices of PK columns in the column list
+        pk_indices = [columns.index(pk) for pk in pk_columns if pk in columns]
 
         try:
             with self._source_connection() as source_conn, self._target_connection() as target_conn:
-                last_key_value = None
+                last_key_value = None  # Will be tuple of (pk_values..., ctid) or just (ctid,)
                 while rows_transferred < source_row_count:
                     chunk_start = time.time()
 
@@ -217,10 +224,10 @@ class DataTransfer:
                         source_schema,
                         source_table,
                         columns,
-                        pk_column,
+                        pk_columns,
                         last_key_value,
                         chunk_size,
-                        pk_index,
+                        pk_indices,
                         where_clause,
                     )
 
@@ -369,19 +376,19 @@ class DataTransfer:
         columns = self.source_hook.get_records(query, parameters=(schema_name, table_name))
         return [col[0] for col in columns]
 
-    def _get_primary_key_column(
+    def _get_primary_key_columns(
         self,
         schema_name: str,
         table_name: str,
         columns: List[str]
-    ) -> str:
+    ) -> List[str]:
         """
-        Get the primary key column for keyset pagination.
+        Get all primary key columns for keyset pagination (supports composite PKs).
 
         Priority order:
-        1. Actual primary key from database (correct for pagination)
+        1. Actual primary key columns from database (ordered by key position)
         2. 'id' column as fallback (common convention)
-        3. First column as last resort
+        3. Empty list if no PK found (will use ctid-only pagination)
 
         Args:
             schema_name: Schema name
@@ -389,9 +396,9 @@ class DataTransfer:
             columns: List of available columns
 
         Returns:
-            Column name to use for keyset pagination
+            List of column names forming the primary key, empty if none found
         """
-        # 1. First try to get actual primary key from database
+        # 1. First try to get actual primary key columns from database
         query = """
         SELECT a.attname
         FROM pg_catalog.pg_constraint con
@@ -404,17 +411,17 @@ class DataTransfer:
         try:
             pk_cols = self.source_hook.get_records(query, parameters=(schema_name, table_name))
             if pk_cols:
-                return pk_cols[0][0]
+                return [col[0] for col in pk_cols]
         except Exception:
             pass
 
         # 2. Fall back to 'id' column if it exists (case-insensitive)
         for col in columns:
             if col.lower() == 'id':
-                return col
+                return [col]
 
-        # 3. Last resort: first column
-        return columns[0] if columns else 'id'
+        # 3. No PK found - return empty list (will use ctid-only pagination)
+        return []
 
     def _calculate_optimal_chunk_size(self, row_count: int, requested_chunk: int) -> int:
         """Determine an appropriate chunk size based on table volume."""
@@ -438,16 +445,32 @@ class DataTransfer:
         schema_name: str,
         table_name: str,
         columns: List[str],
-        pk_column: str,
-        last_key_value: Optional[Any],
+        pk_columns: List[str],
+        last_key_value: Optional[Tuple[Any, ...]],
         limit: int,
-        pk_index: int,
+        pk_indices: List[int],
         where_clause: Optional[str] = None,
-    ) -> Tuple[List[Tuple[Any, ...]], Optional[Any]]:
+    ) -> Tuple[List[Tuple[Any, ...]], Optional[Tuple[Any, ...]]]:
         """Read rows using keyset pagination with deterministic ordering.
 
-        Uses ctid (physical row location) for tie-breaking when pk_column has duplicates.
-        This ensures all rows are read even when the pagination key is not unique.
+        Supports composite primary keys by using tuple comparison:
+        (pk1, pk2, ..., ctid) > (last_pk1, last_pk2, ..., last_ctid)
+
+        If no primary key exists, falls back to ctid-only ordering.
+
+        Args:
+            conn: Active database connection
+            schema_name: Source schema name
+            table_name: Source table name
+            columns: List of columns to select
+            pk_columns: List of primary key column names (can be empty)
+            last_key_value: Tuple of (pk_values..., ctid) from previous chunk, or None
+            limit: Maximum rows to fetch
+            pk_indices: Indices of PK columns in the columns list
+            where_clause: Optional WHERE clause for partition filtering
+
+        Returns:
+            Tuple of (rows, next_key_value) where next_key_value is (pk_values..., ctid)
         """
 
         # Build column list with proper quoting using psycopg2.sql
@@ -460,18 +483,36 @@ class DataTransfer:
             table=sql.Identifier(table_name)
         )
 
-        # Order by pk_column first, then ctid for deterministic ordering
-        order_by = sql.SQL('ORDER BY {pk}, ctid').format(pk=sql.Identifier(pk_column))
+        # Build ORDER BY clause: (pk1, pk2, ..., ctid) or just (ctid) if no PK
+        if pk_columns:
+            order_cols = [sql.Identifier(pk) for pk in pk_columns] + [sql.SQL('ctid')]
+        else:
+            order_cols = [sql.SQL('ctid')]
+        order_by = sql.SQL('ORDER BY {}').format(sql.SQL(', ').join(order_cols))
         limit_sql = sql.SQL('LIMIT {}').format(sql.Literal(limit))
 
         # Build WHERE clause combining filter and pagination
         where_conditions = []
+        params = []
+
         if where_clause:
             # where_clause is trusted (comes from our partition logic)
             where_conditions.append(sql.SQL('({})').format(sql.SQL(where_clause)))
+
         if last_key_value is not None:
-            # Use tuple comparison for tie-breaking: (pk, ctid) > (last_pk, last_ctid)
-            where_conditions.append(sql.SQL('({pk}, ctid) > (%s, %s)').format(pk=sql.Identifier(pk_column)))
+            # Build tuple comparison: (pk1, pk2, ..., ctid) > (%s, %s, ..., %s)
+            if pk_columns:
+                tuple_cols = [sql.Identifier(pk) for pk in pk_columns] + [sql.SQL('ctid')]
+            else:
+                tuple_cols = [sql.SQL('ctid')]
+
+            placeholders = sql.SQL(', ').join([sql.SQL('%s')] * len(last_key_value))
+            tuple_comparison = sql.SQL('({cols}) > ({placeholders})').format(
+                cols=sql.SQL(', ').join(tuple_cols),
+                placeholders=placeholders
+            )
+            where_conditions.append(tuple_comparison)
+            params = list(last_key_value)
 
         if where_conditions:
             where_part = sql.SQL('WHERE {}').format(sql.SQL(' AND ').join(where_conditions))
@@ -481,14 +522,12 @@ class DataTransfer:
                 order=order_by,
                 limit=limit_sql
             )
-            params = last_key_value if last_key_value is not None else None
         else:
             query = sql.SQL('{base} {order} {limit}').format(
                 base=base_query,
                 order=order_by,
                 limit=limit_sql
             )
-            params = None
 
         try:
             with conn.cursor() as cursor:
@@ -501,15 +540,21 @@ class DataTransfer:
                 if not rows:
                     return [], last_key_value
 
-                # Last row: extract pk value and ctid for next pagination
+                # Last row: extract pk values and ctid for next pagination
                 last_row = rows[-1]
-                next_pk = last_row[pk_index]
-                next_ctid = last_row[-1]  # ctid is last column
+                ctid = last_row[-1]  # ctid is always last column
+
+                # Build next_key_value tuple: (pk_values..., ctid)
+                if pk_indices:
+                    pk_values = tuple(last_row[idx] for idx in pk_indices)
+                    next_key_value = pk_values + (ctid,)
+                else:
+                    next_key_value = (ctid,)
 
                 # Remove ctid from returned rows (it's only for pagination)
                 cleaned_rows = [row[:-1] for row in rows]
 
-                return cleaned_rows, (next_pk, next_ctid)
+                return cleaned_rows, next_key_value
         except Exception as e:
             logger.error(f"Error reading chunk after key {last_key_value}: {str(e)}")
             raise
