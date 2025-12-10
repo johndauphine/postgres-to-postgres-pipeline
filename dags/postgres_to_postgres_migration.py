@@ -178,9 +178,15 @@ def postgres_to_postgres_migration():
         """Create target schema in PostgreSQL if it doesn't exist."""
         params = context["params"]
         from airflow.providers.postgres.hooks.postgres import PostgresHook
+        from psycopg2 import sql
 
         postgres_hook = PostgresHook(postgres_conn_id=params["target_conn_id"])
-        postgres_hook.run(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
+        # Use sql.Identifier to safely quote schema name (handles reserved words, mixed case)
+        with postgres_hook.get_conn() as conn:
+            query = sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema_name))
+            with conn.cursor() as cursor:
+                cursor.execute(query)
+            conn.commit()
 
         logger.info(f"Ensured schema {schema_name} exists in PostgreSQL target")
         return f"Schema {schema_name} ready"

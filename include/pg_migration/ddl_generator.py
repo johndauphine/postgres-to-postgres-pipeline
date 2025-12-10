@@ -49,7 +49,7 @@ class DDLGenerator:
 
         # Start building the CREATE TABLE statement
         table_name = mapped_schema['table_name']
-        qualified_name = f"{target_schema}.{self._quote_identifier(table_name)}"
+        qualified_name = f"{self._quote_identifier(target_schema)}.{self._quote_identifier(table_name)}"
 
         unlogged_clause = "UNLOGGED " if unlogged else ""
         ddl_parts = [f"CREATE {unlogged_clause}TABLE {qualified_name} ("]
@@ -90,7 +90,7 @@ class DDLGenerator:
         Returns:
             DROP TABLE DDL statement
         """
-        qualified_name = f"{schema_name}.{self._quote_identifier(table_name)}"
+        qualified_name = f"{self._quote_identifier(schema_name)}.{self._quote_identifier(table_name)}"
         cascade_clause = " CASCADE" if cascade else ""
         return f"DROP TABLE IF EXISTS {qualified_name}{cascade_clause}"
 
@@ -106,7 +106,7 @@ class DDLGenerator:
         Returns:
             TRUNCATE TABLE DDL statement
         """
-        qualified_name = f"{schema_name}.{self._quote_identifier(table_name)}"
+        qualified_name = f"{self._quote_identifier(schema_name)}.{self._quote_identifier(table_name)}"
         cascade_clause = " CASCADE" if cascade else ""
         return f"TRUNCATE TABLE {qualified_name}{cascade_clause}"
 
@@ -131,7 +131,7 @@ class DDLGenerator:
             unique_clause = "UNIQUE " if index.get('is_unique') else ""
 
             ddl = f"CREATE {unique_clause}INDEX {self._quote_identifier(index_name)} " \
-                  f"ON {target_schema}.{self._quote_identifier(table_name)} ({columns})"
+                  f"ON {self._quote_identifier(target_schema)}.{self._quote_identifier(table_name)} ({columns})"
             index_statements.append(ddl)
 
         return index_statements
@@ -156,15 +156,17 @@ class DDLGenerator:
             columns = ', '.join([self._quote_identifier(col) for col in fk['columns']])
             ref_table = fk['referenced_table']
             ref_columns = ', '.join([self._quote_identifier(col) for col in fk['referenced_columns']])
+            # Use referenced schema from metadata if available, otherwise default to target_schema
+            ref_schema = fk.get('referenced_schema', target_schema)
 
             # Map referential actions
             on_delete = fk.get('on_delete', 'NO ACTION')
             on_update = fk.get('on_update', 'NO ACTION')
 
-            ddl = f"ALTER TABLE {target_schema}.{self._quote_identifier(table_name)} " \
+            ddl = f"ALTER TABLE {self._quote_identifier(target_schema)}.{self._quote_identifier(table_name)} " \
                   f"ADD CONSTRAINT {self._quote_identifier(constraint_name)} " \
                   f"FOREIGN KEY ({columns}) " \
-                  f"REFERENCES {target_schema}.{self._quote_identifier(ref_table)} ({ref_columns}) " \
+                  f"REFERENCES {self._quote_identifier(ref_schema)}.{self._quote_identifier(ref_table)} ({ref_columns}) " \
                   f"ON DELETE {on_delete} ON UPDATE {on_update}"
             fk_statements.append(ddl)
 
@@ -196,7 +198,7 @@ class DDLGenerator:
             pg_definition = self._convert_check_constraint(definition)
 
             if pg_definition:
-                ddl = f"ALTER TABLE {target_schema}.{self._quote_identifier(table_name)} " \
+                ddl = f"ALTER TABLE {self._quote_identifier(target_schema)}.{self._quote_identifier(table_name)} " \
                       f"ADD CONSTRAINT {self._quote_identifier(constraint_name)} " \
                       f"CHECK {pg_definition}"
                 check_statements.append(ddl)
@@ -239,7 +241,7 @@ class DDLGenerator:
         Returns:
             ALTER TABLE SET LOGGED DDL statement
         """
-        qualified_name = f"{schema_name}.{self._quote_identifier(table_name)}"
+        qualified_name = f"{self._quote_identifier(schema_name)}.{self._quote_identifier(table_name)}"
         return f"ALTER TABLE {qualified_name} SET LOGGED"
 
     def generate_primary_key(self, table_schema: Dict[str, Any], target_schema: str = 'public') -> Optional[str]:
@@ -258,7 +260,7 @@ class DDLGenerator:
         """
         mapped_schema = map_table_schema(table_schema)
         table_name = mapped_schema['table_name']
-        qualified_name = f"{target_schema}.{self._quote_identifier(table_name)}"
+        qualified_name = f"{self._quote_identifier(target_schema)}.{self._quote_identifier(table_name)}"
 
         pk = mapped_schema.get('primary_key')
         if not pk:
