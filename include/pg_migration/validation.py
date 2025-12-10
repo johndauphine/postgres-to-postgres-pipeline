@@ -7,6 +7,7 @@ including row count comparisons and data integrity checks.
 
 from typing import Dict, Any, List, Optional, Tuple
 from airflow.providers.postgres.hooks.postgres import PostgresHook
+from psycopg2 import sql
 from datetime import datetime
 import logging
 
@@ -46,13 +47,27 @@ class MigrationValidator:
         Returns:
             Validation result dictionary
         """
-        # Get source row count
-        source_query = f'SELECT COUNT(*) FROM {source_schema}."{source_table}"'
-        source_count = self.source_hook.get_first(source_query)[0] or 0
+        # Get source row count using safe identifier quoting
+        source_query = sql.SQL('SELECT COUNT(*) FROM {}.{}').format(
+            sql.Identifier(source_schema),
+            sql.Identifier(source_table)
+        )
+        with self.source_hook.get_conn() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(source_query)
+                result = cursor.fetchone()
+                source_count = result[0] if result else 0
 
-        # Get target row count
-        target_query = f'SELECT COUNT(*) FROM {target_schema}."{target_table}"'
-        target_count = self.target_hook.get_first(target_query)[0] or 0
+        # Get target row count using safe identifier quoting
+        target_query = sql.SQL('SELECT COUNT(*) FROM {}.{}').format(
+            sql.Identifier(target_schema),
+            sql.Identifier(target_table)
+        )
+        with self.target_hook.get_conn() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(target_query)
+                result = cursor.fetchone()
+                target_count = result[0] if result else 0
 
         # Calculate difference
         row_difference = target_count - source_count
@@ -119,25 +134,32 @@ class MigrationValidator:
             columns = self.source_hook.get_records(columns_query, parameters=(source_schema, source_table))
             key_columns = [col[0] for col in columns[:5]]  # Use first 5 columns for comparison
 
-        # Build column lists
-        source_columns = ', '.join([f'"{col}"' for col in key_columns])
-        target_columns = ', '.join([f'"{col}"' for col in key_columns])
+        # Build column list using safe identifiers
+        column_identifiers = sql.SQL(', ').join([sql.Identifier(col) for col in key_columns])
 
-        # Get sample from source
-        source_query = f"""
-        SELECT {source_columns}
-        FROM {source_schema}."{source_table}"
-        LIMIT {sample_size}
-        """
-        source_sample = self.source_hook.get_records(source_query)
+        # Get sample from source using safe identifier quoting
+        source_query = sql.SQL('SELECT {} FROM {}.{} LIMIT {}').format(
+            column_identifiers,
+            sql.Identifier(source_schema),
+            sql.Identifier(source_table),
+            sql.Literal(sample_size)
+        )
+        with self.source_hook.get_conn() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(source_query)
+                source_sample = cursor.fetchall()
 
-        # Get sample from target
-        target_query = f"""
-        SELECT {target_columns}
-        FROM {target_schema}."{target_table}"
-        LIMIT {sample_size}
-        """
-        target_sample = self.target_hook.get_records(target_query)
+        # Get sample from target using safe identifier quoting
+        target_query = sql.SQL('SELECT {} FROM {}.{} LIMIT {}').format(
+            column_identifiers,
+            sql.Identifier(target_schema),
+            sql.Identifier(target_table),
+            sql.Literal(sample_size)
+        )
+        with self.target_hook.get_conn() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(target_query)
+                target_sample = cursor.fetchall()
 
         # Compare samples
         matches = 0

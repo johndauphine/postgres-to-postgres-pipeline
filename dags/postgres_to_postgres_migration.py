@@ -19,6 +19,7 @@ from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from pendulum import datetime
 from datetime import timedelta
 from typing import List, Dict, Any
+from psycopg2 import sql
 import logging
 import os
 import re
@@ -376,39 +377,49 @@ def postgres_to_postgres_migration():
             # Use NTILE-based partitioning for balanced row distribution
             # This handles sparse IDs and ensures equal row counts per partition
             # For UUID columns, cast to TEXT for MIN/MAX aggregation (PostgreSQL doesn't support MIN/MAX on UUID)
-            if is_uuid_pk:
-                ntile_query = f"""
-                    WITH numbered AS (
-                        SELECT "{safe_pk_column}",
-                               NTILE({partition_count}) OVER (ORDER BY "{safe_pk_column}") as partition_id
-                        FROM {safe_source_schema}."{safe_table_name}"
-                    )
-                    SELECT partition_id,
-                           MIN("{safe_pk_column}"::TEXT)::UUID as min_pk,
-                           MAX("{safe_pk_column}"::TEXT)::UUID as max_pk,
-                           COUNT(*) as row_count
-                    FROM numbered
-                    GROUP BY partition_id
-                    ORDER BY partition_id
-                """
-            else:
-                ntile_query = f"""
-                    WITH numbered AS (
-                        SELECT "{safe_pk_column}",
-                               NTILE({partition_count}) OVER (ORDER BY "{safe_pk_column}") as partition_id
-                        FROM {safe_source_schema}."{safe_table_name}"
-                    )
-                    SELECT partition_id,
-                           MIN("{safe_pk_column}") as min_pk,
-                           MAX("{safe_pk_column}") as max_pk,
-                           COUNT(*) as row_count
-                    FROM numbered
-                    GROUP BY partition_id
-                    ORDER BY partition_id
-                """
+            # Use psycopg2.sql for safe identifier quoting
+            pk_id = sql.Identifier(safe_pk_column)
+            schema_id = sql.Identifier(safe_source_schema)
+            table_id = sql.Identifier(safe_table_name)
+            partition_lit = sql.Literal(partition_count)
 
+            if is_uuid_pk:
+                ntile_query_composed = sql.SQL("""
+                    WITH numbered AS (
+                        SELECT {pk},
+                               NTILE({partitions}) OVER (ORDER BY {pk}) as partition_id
+                        FROM {schema}.{table}
+                    )
+                    SELECT partition_id,
+                           MIN({pk}::TEXT)::UUID as min_pk,
+                           MAX({pk}::TEXT)::UUID as max_pk,
+                           COUNT(*) as row_count
+                    FROM numbered
+                    GROUP BY partition_id
+                    ORDER BY partition_id
+                """).format(pk=pk_id, partitions=partition_lit, schema=schema_id, table=table_id)
+            else:
+                ntile_query_composed = sql.SQL("""
+                    WITH numbered AS (
+                        SELECT {pk},
+                               NTILE({partitions}) OVER (ORDER BY {pk}) as partition_id
+                        FROM {schema}.{table}
+                    )
+                    SELECT partition_id,
+                           MIN({pk}) as min_pk,
+                           MAX({pk}) as max_pk,
+                           COUNT(*) as row_count
+                    FROM numbered
+                    GROUP BY partition_id
+                    ORDER BY partition_id
+                """).format(pk=pk_id, partitions=partition_lit, schema=schema_id, table=table_id)
+
+            # Execute using cursor for psycopg2.sql compatibility
             try:
-                boundaries = source_hook.get_records(ntile_query)
+                with source_hook.get_conn() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(ntile_query_composed)
+                        boundaries = cursor.fetchall()
             except Exception as e:
                 logger.warning(f"NTILE query failed for {safe_table_name}: {e}")
                 # Fallback: Use ROW_NUMBER-based partitioning (works for any PK type)
@@ -420,19 +431,28 @@ def postgres_to_postgres_migration():
                     # Last partition takes all remaining rows
                     end_row = row_count if i == partition_count - 1 else (i + 1) * rows_per_partition
                     partition_rows = end_row - start_row + 1
-                    # Get boundary PK values using ROW_NUMBER window function
-                    boundary_query = f"""
+                    # Get boundary PK values using ROW_NUMBER window function with safe identifier quoting
+                    boundary_query_composed = sql.SQL("""
                         WITH numbered AS (
-                            SELECT "{safe_pk_column}",
-                                   ROW_NUMBER() OVER (ORDER BY "{safe_pk_column}") as rn
-                            FROM {safe_source_schema}."{safe_table_name}"
+                            SELECT {pk},
+                                   ROW_NUMBER() OVER (ORDER BY {pk}) as rn
+                            FROM {schema}.{table}
                         )
                         SELECT
-                            (SELECT "{safe_pk_column}" FROM numbered WHERE rn = {start_row}) as min_pk,
-                            (SELECT "{safe_pk_column}" FROM numbered WHERE rn = {end_row}) as max_pk
-                    """
+                            (SELECT {pk} FROM numbered WHERE rn = {start}) as min_pk,
+                            (SELECT {pk} FROM numbered WHERE rn = {end}) as max_pk
+                    """).format(
+                        pk=pk_id,
+                        schema=schema_id,
+                        table=table_id,
+                        start=sql.Literal(start_row),
+                        end=sql.Literal(end_row)
+                    )
                     try:
-                        result = source_hook.get_first(boundary_query)
+                        with source_hook.get_conn() as conn:
+                            with conn.cursor() as cursor:
+                                cursor.execute(boundary_query_composed)
+                                result = cursor.fetchone()
                         if result and result[0] is not None:
                             boundaries.append((i + 1, result[0], result[1], partition_rows))
                     except Exception as inner_e:
