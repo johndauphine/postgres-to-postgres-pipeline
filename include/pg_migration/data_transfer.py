@@ -16,6 +16,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 import csv
@@ -24,6 +25,36 @@ from psycopg2 import pool as pg_pool
 from psycopg2 import sql
 
 logger = logging.getLogger(__name__)
+
+# Allowed WHERE clause patterns for partition queries
+# Only allows: "column" op %s patterns with AND combinations
+# This prevents SQL injection by only allowing known-safe templates
+_WHERE_CLAUSE_PATTERN = re.compile(
+    r'^"[a-zA-Z_][a-zA-Z0-9_]*"\s*(?:<=?|>=?|<>|!=|=)\s*%s'
+    r'(?:\s+AND\s+"[a-zA-Z_][a-zA-Z0-9_]*"\s*(?:<=?|>=?|<>|!=|=)\s*%s)*$',
+    re.IGNORECASE
+)
+
+
+def _validate_where_clause_template(clause_sql: str) -> None:
+    """
+    Validate that a WHERE clause template only contains safe patterns.
+
+    Only allows patterns like:
+    - "column" <= %s
+    - "column" > %s AND "column" <= %s
+
+    Args:
+        clause_sql: The WHERE clause SQL template
+
+    Raises:
+        ValueError: If the template contains potentially unsafe patterns
+    """
+    if not _WHERE_CLAUSE_PATTERN.match(clause_sql.strip()):
+        raise ValueError(
+            f"Invalid WHERE clause template. Only quoted identifier comparisons with "
+            f"parameterized values are allowed. Got: {clause_sql[:100]}"
+        )
 
 
 class DataTransfer:
@@ -328,6 +359,8 @@ class DataTransfer:
         params: Sequence[Any] = ()
         if where_clause:
             clause_sql, clause_params = where_clause
+            # Validate WHERE clause template to prevent SQL injection
+            _validate_where_clause_template(clause_sql)
             full_query = sql.SQL('{} WHERE {}').format(base_query, sql.SQL(clause_sql))
             params = clause_params
         else:
@@ -504,6 +537,8 @@ class DataTransfer:
 
         if where_clause:
             clause_sql, clause_params = where_clause
+            # Validate WHERE clause template to prevent SQL injection
+            _validate_where_clause_template(clause_sql)
             where_conditions.append(sql.SQL('({})').format(sql.SQL(clause_sql)))
             params.extend(clause_params)
 
