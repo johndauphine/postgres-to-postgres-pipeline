@@ -107,7 +107,7 @@ result = transfer_table_data(
         'columns': ['id', 'post_id', 'vote_type', 'created_at']
     },
     chunk_size=100_000,
-    where_clause='id > 1000000 AND id <= 2000000'  # For partitions
+    where_clause=('id > %s AND id <= %s', [1_000_000, 2_000_000])  # For partitions
 )
 ```
 

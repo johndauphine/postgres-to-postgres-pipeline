@@ -25,11 +25,11 @@ extract_source_schema
 
 - **prepare_regular_tables**: Splits tables below `partition_threshold` into a list for single-task transfers. Outputs `regular_tables` (fed to `transfer_table_data.expand`).
 
-- **prepare_large_table_partitions**: For tables at/above `partition_threshold`, computes balanced PK-based partitions (NTILE window). Emits partition dicts with `partition_name`, `where_clause`, and `estimated_rows` for `transfer_partition.expand`.
+- **prepare_large_table_partitions**: For tables at/above `partition_threshold`, computes balanced PK-based partitions (NTILE window). Emits partition dicts with `partition_name`, `where_clause` (SQL plus params), and `estimated_rows` for `transfer_partition.expand`.
 
 - **transfer_table_data (mapped)**: Streams a regular table using keyset pagination + COPY. Adjusts `chunk_size` per table, truncates target (already done), and returns transfer stats (row counts, timing, success flag).
 
-- **transfer_partition (mapped)**: Same transfer logic but scoped to a partition `where_clause`; runs in parallel across partitions of a large table.
+- **transfer_partition (mapped)**: Same transfer logic but scoped to a partition `where_clause` (SQL plus params); runs in parallel across partitions of a large table.
 
 - **collect_all_results**: Aggregates mapped XCom outputs from both transfer task groups. Builds a single list of per-table results (partition totals rolled up) for downstream consumers.
 
