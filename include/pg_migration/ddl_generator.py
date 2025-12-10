@@ -388,29 +388,21 @@ class DDLGenerator:
 
     def _quote_identifier(self, identifier: str) -> str:
         """
-        Quote a PostgreSQL identifier if necessary.
+        Quote a PostgreSQL identifier safely.
+
+        Always quotes and escapes identifiers to prevent SQL injection and
+        handle reserved words, mixed case, and special characters.
 
         Args:
             identifier: Identifier to quote
 
         Returns:
-            Quoted identifier
+            Safely quoted identifier
         """
-        # List of PostgreSQL reserved words (simplified)
-        reserved_words = {
-            'user', 'order', 'group', 'table', 'column', 'select', 'insert',
-            'update', 'delete', 'where', 'from', 'join', 'left', 'right',
-            'inner', 'outer', 'cross', 'natural', 'using', 'on', 'as', 'case',
-            'when', 'then', 'else', 'end', 'null', 'not', 'and', 'or', 'in',
-            'exists', 'like', 'between', 'distinct', 'having', 'limit', 'offset'
-        }
-
-        # Quote if reserved word, contains special characters, or starts with number
-        if (identifier.lower() in reserved_words or
-            not identifier.replace('_', '').isalnum() or
-            identifier[0].isdigit()):
-            return f'"{identifier}"'
-        return identifier
+        # Escape embedded double quotes by doubling them (PostgreSQL standard)
+        escaped = identifier.replace('"', '""')
+        # Always quote to be safe - handles reserved words, mixed case, special chars
+        return f'"{escaped}"'
 
     def _convert_check_constraint(self, source_definition: str) -> Optional[str]:
         """
