@@ -223,7 +223,7 @@ def postgres_to_postgres_migration():
                 if table_exists and drop_existing:
                     # Drop and recreate when schema may have changed
                     logger.info(f"Dropping existing table {target_schema}.{table_name}")
-                    drop_stmt = f'DROP TABLE IF EXISTS {target_schema}."{table_name}" CASCADE'
+                    drop_stmt = generator.generate_drop_table(table_name, target_schema, cascade=True)
                     generator.execute_ddl([drop_stmt], transaction=False)
                     logger.info(f"✓ Dropped table {table_name}")
                     table_exists = False  # Will be recreated below
@@ -448,23 +448,21 @@ def postgres_to_postgres_migration():
 
             for partition_id, min_pk, max_pk, part_rows in boundaries:
                 # Build WHERE clause using actual boundary values
-                # Use quote_sql_literal to properly handle UUID/VARCHAR/string PKs
-                quoted_min = quote_sql_literal(min_pk)
-                quoted_max = quote_sql_literal(max_pk)
                 if partition_id == 1:
                     # First partition: use <= max to ensure no gaps
-                    where_clause = f'"{safe_pk_column}" <= {quoted_max}'
+                    where_clause = (f'"{safe_pk_column}" <= %s', [max_pk])
                 elif partition_id == len(boundaries):
                     # Last partition: use > previous max to avoid overlap
                     # Get previous partition's max_pk
                     prev_max = boundaries[partition_id - 2][2]  # boundaries is 0-indexed, partition_id is 1-indexed
-                    quoted_prev_max = quote_sql_literal(prev_max)
-                    where_clause = f'"{safe_pk_column}" > {quoted_prev_max}'
+                    where_clause = (f'"{safe_pk_column}" > %s', [prev_max])
                 else:
                     # Middle partitions: use > prev_max AND <= current_max
                     prev_max = boundaries[partition_id - 2][2]
-                    quoted_prev_max = quote_sql_literal(prev_max)
-                    where_clause = f'"{safe_pk_column}" > {quoted_prev_max} AND "{safe_pk_column}" <= {quoted_max}'
+                    where_clause = (
+                        f'"{safe_pk_column}" > %s AND "{safe_pk_column}" <= %s',
+                        [prev_max, max_pk],
+                    )
 
                 partition_info = {
                     **table_info,

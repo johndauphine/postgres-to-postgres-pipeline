@@ -7,7 +7,7 @@ including chunked reading, bulk loading, and progress tracking.
 Uses psycopg2 connections for keyset pagination and COPY for efficient bulk loading.
 """
 
-from typing import Dict, Any, Optional, List, Tuple, Iterable
+from typing import Dict, Any, Optional, List, Tuple, Iterable, Sequence
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from datetime import datetime, date, time as dt_time
 from decimal import Decimal
@@ -153,7 +153,7 @@ class DataTransfer:
         chunk_size: int = 10000,
         truncate_target: bool = True,
         columns: Optional[List[str]] = None,
-        where_clause: Optional[str] = None
+        where_clause: Optional[Tuple[str, Sequence[Any]]] = None
     ) -> Dict[str, Any]:
         """
         Transfer data from PostgreSQL source table to PostgreSQL target table.
@@ -166,7 +166,7 @@ class DataTransfer:
             chunk_size: Number of rows to transfer per batch
             truncate_target: Whether to truncate target table before transfer
             columns: Specific columns to transfer (None for all columns)
-            where_clause: Optional WHERE clause for filtering source data
+            where_clause: Optional WHERE clause and parameters for filtering source data
 
         Returns:
             Transfer result dictionary with statistics
@@ -300,7 +300,13 @@ class DataTransfer:
 
         return result
 
-    def _get_row_count(self, schema_name: str, table_name: str, is_source: bool = True, where_clause: Optional[str] = None) -> int:
+    def _get_row_count(
+        self,
+        schema_name: str,
+        table_name: str,
+        is_source: bool = True,
+        where_clause: Optional[Tuple[str, Sequence[Any]]] = None
+    ) -> int:
         """
         Get row count from a table.
 
@@ -308,7 +314,7 @@ class DataTransfer:
             schema_name: Schema name
             table_name: Table name
             is_source: Whether this is the source or target PostgreSQL
-            where_clause: Optional WHERE clause for filtering (applied to source or target)
+            where_clause: Optional tuple of (WHERE sql, params) for filtering (applied to source or target)
 
         Returns:
             Row count
@@ -319,18 +325,19 @@ class DataTransfer:
             sql.Identifier(table_name)
         )
 
+        params: Sequence[Any] = ()
         if where_clause:
-            # where_clause is trusted (comes from our partition logic, not user input)
-            full_query = sql.SQL('{} WHERE {}').format(base_query, sql.SQL(where_clause))
+            clause_sql, clause_params = where_clause
+            full_query = sql.SQL('{} WHERE {}').format(base_query, sql.SQL(clause_sql))
+            params = clause_params
         else:
             full_query = base_query
 
         # Execute using hook's connection
         hook = self.source_hook if is_source else self.target_hook
         with hook.get_conn() as conn:
-            query_str = full_query.as_string(conn)
             with conn.cursor() as cursor:
-                cursor.execute(query_str)
+                cursor.execute(full_query, params)
                 result = cursor.fetchone()
                 return result[0] if result else 0
 
@@ -449,7 +456,7 @@ class DataTransfer:
         last_key_value: Optional[Tuple[Any, ...]],
         limit: int,
         pk_indices: List[int],
-        where_clause: Optional[str] = None,
+        where_clause: Optional[Tuple[str, Sequence[Any]]] = None,
     ) -> Tuple[List[Tuple[Any, ...]], Optional[Tuple[Any, ...]]]:
         """Read rows using keyset pagination with deterministic ordering.
 
@@ -467,7 +474,7 @@ class DataTransfer:
             last_key_value: Tuple of (pk_values..., ctid) from previous chunk, or None
             limit: Maximum rows to fetch
             pk_indices: Indices of PK columns in the columns list
-            where_clause: Optional WHERE clause for partition filtering
+            where_clause: Optional tuple of (WHERE sql, params) for partition filtering
 
         Returns:
             Tuple of (rows, next_key_value) where next_key_value is (pk_values..., ctid)
@@ -493,11 +500,12 @@ class DataTransfer:
 
         # Build WHERE clause combining filter and pagination
         where_conditions = []
-        params = []
+        params: List[Any] = []
 
         if where_clause:
-            # where_clause is trusted (comes from our partition logic)
-            where_conditions.append(sql.SQL('({})').format(sql.SQL(where_clause)))
+            clause_sql, clause_params = where_clause
+            where_conditions.append(sql.SQL('({})').format(sql.SQL(clause_sql)))
+            params.extend(clause_params)
 
         if last_key_value is not None:
             # Build tuple comparison: (pk1, pk2, ..., ctid) > (%s, %s, ..., %s)
@@ -512,7 +520,7 @@ class DataTransfer:
                 placeholders=placeholders
             )
             where_conditions.append(tuple_comparison)
-            params = list(last_key_value)
+            params.extend(list(last_key_value))
 
         if where_conditions:
             where_part = sql.SQL('WHERE {}').format(sql.SQL(' AND ').join(where_conditions))
@@ -639,7 +647,7 @@ def transfer_table_data(
     table_info: Dict[str, Any],
     chunk_size: int = 10000,
     truncate: bool = True,
-    where_clause: Optional[str] = None
+    where_clause: Optional[Tuple[str, Sequence[Any]]] = None
 ) -> Dict[str, Any]:
     """
     Convenience function to transfer a single table.
@@ -650,7 +658,7 @@ def transfer_table_data(
         table_info: Table information dictionary with schema and table names
         chunk_size: Rows per chunk
         truncate: Whether to truncate target before transfer
-        where_clause: Optional WHERE clause for filtering source data
+    where_clause: Optional tuple of (WHERE sql, params) for filtering source data
 
     Returns:
         Transfer result dictionary
